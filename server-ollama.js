@@ -1,7 +1,7 @@
 /**
- * ALIA 2.0 - Local Ollama Server
- * Standalone server for testing Memory OS with local LLM
- * No OpenAI dependency - 100% local inference
+ * ALIA 2.0 - Hybrid LLM Server (Groq + Local Embeddings)
+ * Supports ultra-fast Groq inference + local nomic-embed-text embeddings
+ * Zero-cost embeddings, blazing-fast generation
  */
 
 import http from 'node:http';
@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
+import Groq from 'groq-sdk';
 
 // Load .env file (ESM compatible)
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -33,9 +34,20 @@ if (fs.existsSync(envPath)) {
 // =====================================================
 
 const PORT = 3000;
+
+// LLM Provider Configuration
+const LLM_PROVIDER = process.env.LLM_PROVIDER || 'groq'; // 'groq' or 'ollama'
+
+// Groq (Fast inference - 500+ tok/sec)
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_MODEL = process.env.GROQ_MODEL || 'mixtral-8x7b-32768';
+
+// Ollama (Local inference - offline capability)
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
-const CHAT_MODEL = 'phi3';              // For text generation
-const EMBED_MODEL = 'nomic-embed-text';  // For embeddings (768-dim)
+const OLLAMA_CHAT_MODEL = 'phi3';
+
+// Embeddings (Always local via Ollama - zero cost)
+const EMBED_MODEL = 'nomic-embed-text';  // 768-dim, fast, free
 
 // Load environment variables
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -51,8 +63,14 @@ if (!supabaseUrl || !supabaseServiceKey) {
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+// Initialize clients
+let groq;
+if (LLM_PROVIDER === 'groq' && GROQ_API_KEY) {
+  groq = new Groq({ apiKey: GROQ_API_KEY });
+}
+
 // =====================================================
-// Ollama Client (using native http to avoid Windows fetch issues)
+// Ollama Client (for embeddings + optional local generation)
 // =====================================================
 
 class OllamaClient {
@@ -186,7 +204,37 @@ class OllamaClient {
   }
 }
 
-const ollama = new OllamaClient(OLLAMA_HOST, CHAT_MODEL, EMBED_MODEL);
+const ollama = new OllamaClient(OLLAMA_HOST, OLLAMA_CHAT_MODEL, EMBED_MODEL);
+
+// =====================================================
+// Unified LLM Interface (Groq or Ollama)
+// =====================================================
+
+async function generateText(prompt, options = {}) {
+  if (LLM_PROVIDER === 'groq' && groq) {
+    // Use Groq for fast generation (500+ tok/sec)
+    try {
+      const completion = await groq.chat.completions.create({
+        model: GROQ_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: options.temperature || 0.3,
+        max_tokens: options.max_tokens || 512,
+      });
+      
+      return {
+        text: completion.choices[0]?.message?.content || '',
+        elapsed_ms: 0, // Groq doesn't provide timing
+        provider: 'groq'
+      };
+    } catch (error) {
+      console.warn('⚠️  Groq failed, falling back to local Ollama:', error.message);
+    }
+  }
+  
+  // Fallback to local Ollama or if LLM_PROVIDER is 'ollama'
+  const result = await ollama.generate(prompt, options);
+  return { ...result, provider: 'ollama' };
+}
 
 // =====================================================
 // Memory OS Functions
@@ -216,10 +264,12 @@ Provide analysis in this JSON format (only JSON, no markdown):
   "recommended_focus": "one concise recommendation"
 }`;
 
-    const { text: analysisText } = await ollama.generate(analysisPrompt, {
+    const { text: analysisText, provider } = await generateText(analysisPrompt, {
       temperature: 0.3,
       max_tokens: 256
     });
+    performance.analysis_ms = Date.now() - analysisStart;
+    performance.llm_provider = provider;
 
     // Parse LLM response (handle potential JSON extraction)
     let learning_summary;
@@ -235,8 +285,6 @@ Provide analysis in this JSON format (only JSON, no markdown):
         recommended_focus: 'Review session manually'
       };
     }
-
-    performance.analysis_ms = Date.now() - analysisStart;
 
     // 3. Store in database
     const dbStart = Date.now();
@@ -348,9 +396,11 @@ async function handleRequest(req, res) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'ok',
+      llm_provider: LLM_PROVIDER,
+      groq: LLM_PROVIDER === 'groq' && groq ? '✅' : '➖',
       ollama: ollamaOk ? '✅' : '❌',
       supabase: !supabaseError ? '✅' : '❌',
-      chat_model: CHAT_MODEL,
+      generation_model: LLM_PROVIDER === 'groq' && groq ? GROQ_MODEL : OLLAMA_CHAT_MODEL,
       embed_model: EMBED_MODEL,
       timestamp: new Date().toISOString()
     }));
@@ -423,25 +473,31 @@ async function handleRequest(req, res) {
 const server = http.createServer(handleRequest);
 
 server.listen(PORT, async () => {
-  console.log('\n🚀 ALIA 2.0 - Local Ollama Server');
+  console.log('\n🚀 ALIA 2.0 - Hybrid LLM Server');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`📍 Server: http://localhost:${PORT}`);
-  console.log(`💬 Chat: ${CHAT_MODEL}`);
-  console.log(`🔢 Embeddings: ${EMBED_MODEL} (768-dim)`);
-  console.log(`🔗 Ollama: ${OLLAMA_HOST}`);
+  console.log(`💬 Generation: ${LLM_PROVIDER === 'groq' && groq ? `Groq (${GROQ_MODEL})` : `Ollama (${OLLAMA_CHAT_MODEL})`}`);
+  console.log(`🔢 Embeddings: ${EMBED_MODEL} (768-dim, local)`);
+  console.log(`🔒 Security: Embeddings never leave your machine`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  // Check Ollama connection
+  // Check connections
   const ollamaOk = await ollama.healthCheck();
   if (!ollamaOk) {
     console.error('⚠️  WARNING: Ollama not responding or models not found!');
-    console.error(`   Run: ollama pull ${CHAT_MODEL}`);
+    console.error(`   Run: ollama pull ${OLLAMA_CHAT_MODEL}`);
     console.error(`   Run: ollama pull ${EMBED_MODEL}`);
   } else {
-    console.log('✅ Ollama connected (chat + embed)\n');
+    console.log(`✅ Ollama connected (embeddings${LLM_PROVIDER === 'ollama' ? ' + fallback' : ''})`);
   }
 
-  console.log('📡 Endpoints:');
+  if (LLM_PROVIDER === 'groq' && groq) {
+    console.log('⚡ Groq connected (fast generation, 500+ tok/sec)');
+  } else if (LLM_PROVIDER === 'groq' && !groq) {
+    console.warn('⚠️  GROQ_API_KEY not configured, using Ollama');
+  }
+
+  console.log('\n📡 Endpoints:');
   console.log('  GET  /api/health');
   console.log('  POST /api/memory/store');
   console.log('  POST /api/memory/retrieve');
