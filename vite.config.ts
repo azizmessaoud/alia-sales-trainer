@@ -16,4 +16,10 @@ export default defineConfig({
   server: {
     port: 5173,
   },
+  ssr: {
+    noExternal: ['three'],
+  },
+  optimizeDeps: {
+    include: ['three'],
+  },
 });

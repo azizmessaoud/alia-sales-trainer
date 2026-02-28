@@ -17,7 +17,10 @@
     "scenario:generate": "tsx scripts/generate-test-scenarios.ts",
     "sdg:calculate": "tsx scripts/calculate-sdg-metrics.ts",
     "lint": "eslint app --max-warnings 0",
-    "format": "prettier --write \"app/**/*.{ts,tsx,css,md}\""
+    "format": "prettier --write \"app/**/*.{ts,tsx,css,md}\"",
+    "server": "node server-nvidia-nim.js",
+    "server:ws": "node server-websocket.js",
+    "dev:all": "concurrently \"npm run server\" \"npm run server:ws\" \"npm run dev\""
   },
   "dependencies": {
     "@langchain/core": "^0.1.48",
@@ -27,6 +30,7 @@
     "@remix-run/react": "^2.8.1",
     "@remix-run/serve": "^2.8.1",
     "@supabase/supabase-js": "^2.39.7",
+    "@types/three": "^0.183.1",
     "date-fns": "^3.3.1",
     "groq-sdk": "^0.37.0",
     "isbot": "^5.1.0",
@@ -34,6 +38,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "recharts": "^2.12.0",
+    "three": "^0.183.2",
     "zod": "^3.22.4"
   },
   "devDependencies": {
@@ -43,6 +48,7 @@
     "@types/react": "^18.2.55",
     "@types/react-dom": "^18.2.19",
     "autoprefixer": "^10.4.17",
+    "concurrently": "^9.2.1",
     "eslint": "^8.56.0",
     "postcss": "^8.4.35",
     "prettier": "^3.2.5",
