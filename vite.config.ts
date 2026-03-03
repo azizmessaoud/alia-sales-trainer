@@ -13,6 +13,7 @@ export default defineConfig({
     }),
     tsconfigPaths(),
   ],
+  publicDir: 'public',
   server: {
     port: 5173,
   },
@@ -22,4 +23,5 @@ export default defineConfig({
   optimizeDeps: {
     include: ['three'],
   },
+  assetsInclude: ['**/*.glb', '**/*.gltf'],
 });

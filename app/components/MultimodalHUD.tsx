@@ -272,7 +272,7 @@ export function MultimodalHUD({ metrics, showDetailed = false }: MultimodalHUDPr
         </div>
       </div>
 
-      <style jsx>{`
+      <style>{`
         @keyframes slideDown {
           from {
             opacity: 0;

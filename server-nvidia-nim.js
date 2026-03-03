@@ -401,3 +401,14 @@ server.listen(PORT, async () => {
   console.log('💡 Tip: Self-host NIM containers for HIPAA/GDPR compliance');
   console.log('   Docker: https://developer.nvidia.com/nim\n');
 });
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n❌ Port ${PORT} is already in use!`);
+    console.error(`   Run: Get-NetTCPConnection -LocalPort ${PORT} | Stop-Process -Force`);
+    console.error(`   Then restart this server.\n`);
+  } else {
+    console.error('Server error:', err);
+  }
+  process.exit(1);
+});

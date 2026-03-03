@@ -1,6 +1,7 @@
 /**
- * ALIA 2.0 - Main Training Interface
- * Complete chat-based training with 3D avatar
+ * ALIA 2.0 - Main Training Interface (Full-Duplex WebSocket)
+ * Progressive pipeline: text appears instantly, then audio, then lip-sync
+ * Features: Voice input (Web Speech API), Audio output (TTS), Lip-sync animation
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -8,6 +9,9 @@ import type { MetaFunction } from '@remix-run/node';
 import { Avatar } from '~/components/Avatar';
 import { ChatInput } from '~/components/ChatInput';
 import { SessionHUD, type SessionMetrics } from '~/components/SessionHUD';
+import type { AvatarHandle } from '~/components/Avatar';
+import { useALIAWebSocket } from '~/hooks/useALIAWebSocket';
+import type { Blendshape } from '~/hooks/useALIAWebSocket';
 
 export const meta: MetaFunction = () => {
   return [
@@ -16,9 +20,6 @@ export const meta: MetaFunction = () => {
   ];
 };
 
-// WebSocket connection
-const WS_URL = 'ws://localhost:3001';
-
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -26,14 +27,27 @@ interface ChatMessage {
   timestamp: Date;
 }
 
+// =====================================================
+// Base64 → Uint8Array helper (browser-safe, no Buffer)
+// =====================================================
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 export default function Index() {
   // State
-  const [isConnected, setIsConnected] = useState(false);
+  const [sessionId, setSessionId] = useState('loading');
   const [isLoading, setIsLoading] = useState(false);
-  const [sessionId] = useState(() => crypto.randomUUID());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [visemes, setVisemes] = useState<{ time: number; viseme: string }[]>([]);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [pipelineStage, setPipelineStage] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<SessionMetrics>({
     accuracy: 0,
     compliance: 0,
@@ -41,121 +55,412 @@ export default function Index() {
     clarity: 0,
   });
   const [sessionStatus, setSessionStatus] = useState<'active' | 'paused' | 'completed'>('active');
-  
-  // WebSocket ref
-  const wsRef = useRef<WebSocket | null>(null);
-  
-  // Initialize WebSocket connection
-  useEffect(() => {
-    const ws = new WebSocket(WS_URL);
-    wsRef.current = ws;
-    
-    ws.onopen = () => {
-      console.log('[WS] Connected to ALIA server');
-      setIsConnected(true);
-      
-      // Start session
-      ws.send(JSON.stringify({
-        type: 'start_session',
-        payload: {
-          rep_id: 'demo-rep',
-          session_id: sessionId,
-        },
-      }));
-    };
-    
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        
-        switch (data.type) {
-          case 'avatar_response':
-            setIsSpeaking(true);
-            setVisemes(data.payload.visemes || []);
-            setMetrics(data.payload.metrics || metrics);
-            
-            // Add assistant message
-            setMessages((prev) => [...prev, {
-              id: data.payload.message_id,
-              role: 'assistant',
-              content: data.payload.content,
-              timestamp: new Date(),
-            }]);
-            
-            // Stop speaking after estimated duration
-            setTimeout(() => setIsSpeaking(false), data.payload.content.length * 30);
-            break;
-            
-          case 'message_received':
-            setIsLoading(false);
-            break;
-            
-          case 'metrics_updated':
-            setMetrics(data.payload);
-            break;
-            
-          case 'error':
-            console.error('[WS] Error:', data.payload.message);
-            setIsLoading(false);
-            break;
+  const [error, setError] = useState<string | null>(null);
+
+  // Refs
+  const avatarRef = useRef<AvatarHandle>(null);
+  const audioElementRef = useRef<HTMLAudioElement>(null);
+  const recognitionRef = useRef<any>(null);
+  const objectUrlRef = useRef<string | null>(null);
+  const animationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestStartRef = useRef<number>(0);
+  const lastLLMTextRef = useRef<string>('');
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioUnlockedRef = useRef(false);
+  const usingBrowserTTSRef = useRef(false);
+
+  // =====================================================
+  // Full-Duplex WebSocket — progressive pipeline
+  // =====================================================
+  const { sendChat, interrupt, startSession, endSession, status: wsStatus, currentStage } =
+    useALIAWebSocket({
+      url: 'ws://localhost:3001',
+      autoReconnect: true,
+
+      // Stage 1 arrives: show text immediately
+      onLLMText: (text, llmTime) => {
+        console.log(`✅ LLM [${llmTime}ms]: "${text.substring(0, 60)}..."`);
+        lastLLMTextRef.current = text;
+        setMessages((prev) => [
+          ...prev,
+          { id: crypto.randomUUID(), role: 'assistant', content: text, timestamp: new Date() },
+        ]);
+      },
+
+      // Stage 2 arrives: play audio (or browser TTS if mock)
+      onTTSAudio: (audioBase64, duration, ttsTime, isMock) => {
+        console.log(`✅ TTS [${ttsTime}ms]: ${duration.toFixed(2)}s audio${isMock ? ' (mock → browser TTS)' : ''}`);
+        console.log('   └─ TTS Response details:', {
+          isMock,
+          duration,
+          audioSize: audioBase64 ? audioBase64.length : 0,
+          audioPreview: audioBase64 ? audioBase64.substring(0, 50) + '...' : 'null',
+        });
+
+        if (isMock) {
+          console.log('🔊 Using browser TTS fallback');
+          usingBrowserTTSRef.current = true;
+          speakWithBrowserTTS(lastLLMTextRef.current);
+        } else {
+          console.log('🔊 Using NVIDIA TTS audio');
+          usingBrowserTTSRef.current = false;
+          playAudio(audioBase64, duration);
         }
-      } catch (err) {
-        console.error('[WS] Parse error:', err);
+      },
+
+      // Stage 3 arrives: animate avatar mouth
+      onLipSync: (blendshapes, lipsyncTime, timeline) => {
+        console.log('LS frames:', blendshapes.length, blendshapes[0]);
+        console.log(`✅ LipSync [${lipsyncTime}ms]: ${blendshapes.length} frames`);
+        if (usingBrowserTTSRef.current) {
+          console.log('⏭️  Skipping lip-sync animation (browser TTS active, no audio sync)');
+          return;
+        }
+        animateAvatar(blendshapes);
+      },
+
+      // Full pipeline done
+      onPipelineComplete: (totalTime, breakdown) => {
+        setLatencyMs(totalTime);
+        setIsLoading(false);
+        console.log(
+          `🎉 Pipeline [${totalTime}ms] = LLM(${breakdown.llmTime}) + TTS(${breakdown.ttsTime}) + LS(${breakdown.lipsyncTime})`
+        );
+      },
+
+      onStageChange: (stage) => setPipelineStage(stage),
+
+      onError: (msg) => {
+        setError(msg);
+        setIsLoading(false);
+      },
+    });
+
+  // =====================================================
+  // Audio Context Unlock (required for autoplay)
+  // =====================================================
+  const unlockAudioContext = useCallback(() => {
+    if (audioUnlockedRef.current) return;
+
+    try {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       }
-    };
-    
-    ws.onclose = () => {
-      console.log('[WS] Disconnected');
-      setIsConnected(false);
-    };
-    
-    ws.onerror = (error) => {
-      console.error('[WS] Error:', error);
-    };
-    
-    return () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'end_session', payload: { session_id: sessionId } }));
-        ws.close();
+
+      if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume().then(() => {
+          console.log('✅ AudioContext unlocked and resumed');
+          audioUnlockedRef.current = true;
+        });
+      } else {
+        console.log('✅ AudioContext already active');
+        audioUnlockedRef.current = true;
       }
-    };
-  }, [sessionId]);
-  
-  // Send message handler
-  const handleSendMessage = useCallback((content: string) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      console.error('[WS] Not connected');
+    } catch (err) {
+      console.error('❌ AudioContext unlock failed:', err);
+    }
+  }, []);
+
+  // =====================================================
+  // Audio playback (browser-safe with debug logging)
+  // =====================================================
+  const playAudio = useCallback((audioBase64: string, duration: number) => {
+    try {
+      console.log('🔊 [Audio Debug] Starting playback flow...');
+      console.log('   └─ Audio base64 length:', audioBase64.length);
+      console.log('   └─ Expected duration:', duration, 'seconds');
+
+      // Unlock audio on first playback attempt
+      unlockAudioContext();
+
+      setIsSpeaking(true);
+
+      // Clean up old URL
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+
+      if (!audioElementRef.current) {
+        console.error('❌ Audio element ref is null!');
+        return;
+      }
+
+      const audioBytes = base64ToUint8Array(audioBase64);
+      console.log('   └─ Decoded audio bytes:', audioBytes.length);
+
+      const blob = new Blob([audioBytes as BlobPart], { type: 'audio/wav' });
+      console.log('   └─ Blob created, size:', blob.size, 'bytes');
+
+      const url = URL.createObjectURL(blob);
+      objectUrlRef.current = url;
+      console.log('   └─ Object URL created:', url.substring(0, 50) + '...');
+
+      audioElementRef.current.src = url;
+      audioElementRef.current.volume = 0.85;
+
+      // Try to play with detailed error handling
+      const playPromise = audioElementRef.current.play();
+      
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            console.log('✅ Audio playing successfully!');
+            console.log('   └─ Audio element state:', {
+              paused: audioElementRef.current?.paused,
+              currentTime: audioElementRef.current?.currentTime,
+              duration: audioElementRef.current?.duration,
+              volume: audioElementRef.current?.volume,
+              muted: audioElementRef.current?.muted,
+              readyState: audioElementRef.current?.readyState,
+            });
+          })
+          .catch((e) => {
+            console.error('❌ Audio autoplay blocked or failed:', e);
+            console.error('   └─ Error name:', e.name);
+            console.error('   └─ Error message:', e.message);
+            console.error('   └─ AudioContext state:', audioContextRef.current?.state);
+            console.warn('💡 Solution: Click anywhere on the page first, then try again');
+            setError('Audio blocked by browser - click anywhere on the page first');
+          });
+      }
+
+      // Auto-stop speaking state after audio finishes
+      audioElementRef.current.onended = () => {
+        console.log('✅ Audio playback completed');
+        setIsSpeaking(false);
+      };
+
+      audioElementRef.current.onerror = (e) => {
+        console.error('❌ Audio element error event:', e);
+        setIsSpeaking(false);
+      };
+    } catch (err) {
+      console.error('❌ Playback error:', err);
+      setIsSpeaking(false);
+    }
+  }, [unlockAudioContext]);
+
+  // =====================================================
+  // Browser TTS fallback (when NVIDIA TTS unavailable)
+  // =====================================================
+  const speakWithBrowserTTS = useCallback((text: string) => {
+    try {
+      setIsSpeaking(true);
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'en-US';
+      utterance.rate = 0.95;
+      utterance.pitch = 1.0;
+
+      // Try to find a female voice
+      const voices = window.speechSynthesis.getVoices();
+      const preferred = voices.find(v =>
+        v.name.includes('Female') || v.name.includes('Zira') ||
+        v.name.includes('Aria') || v.name.includes('Jenny')
+      );
+      if (preferred) utterance.voice = preferred;
+
+      utterance.onend = () => setIsSpeaking(false);
+      utterance.onerror = () => setIsSpeaking(false);
+
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+      console.log('🔊 Browser TTS speaking');
+    } catch (err) {
+      console.warn('⚠️ Browser TTS failed:', err);
+      setIsSpeaking(false);
+    }
+  }, []);
+
+  // =====================================================
+  // Avatar lip-sync animation
+  // =====================================================
+  const animateAvatar = useCallback((blendshapes: Blendshape[]) => {
+    if (!blendshapes.length || !avatarRef.current) return;
+
+    const animDurationMs =
+      blendshapes[blendshapes.length - 1].timestamp + 33;
+
+    // Audio element is the master clock — no need to pass audioTime manually.
+    // LipSyncAnimator reads audioElement.currentTime each frame.
+    console.log(`▶️ Animating ${blendshapes.length} frames over ${animDurationMs}ms (audio-clock master)`);
+    avatarRef.current.playLipSync(blendshapes);
+
+    // Auto-stop after animation completes
+    if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
+    animationTimerRef.current = setTimeout(() => {
+      avatarRef.current?.stopLipSync();
+    }, animDurationMs + 200);
+  }, []);
+
+  // =====================================================
+  // Wire audio element → Avatar as master clock (re-run when Avatar mounts)
+  // =====================================================
+  useEffect(() => {
+    if (audioElementRef.current && avatarRef.current) {
+      avatarRef.current.setAudioElement(audioElementRef.current);
+    }
+  });
+
+  // =====================================================
+  // Microphone Input (Web Speech API — zero-latency STT)
+  // =====================================================
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.warn('⚠️ Web Speech API not supported in this browser');
       return;
     }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event: any) => {
+      const last = event.results[event.results.length - 1];
+      if (last.isFinal) {
+        const transcript = last[0].transcript.trim();
+        if (transcript) {
+          console.log(`🎤 Speech recognized: "${transcript}"`);
+          setIsListening(false);
+          handleSendMessage(transcript);
+        }
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      console.warn('🎤 Speech error:', event.error);
+      setIsListening(false);
+    };
+
+    recognition.onend = () => setIsListening(false);
+
+    recognitionRef.current = recognition;
+  }, []);
+
+  const toggleMicrophone = useCallback(() => {
+    if (!recognitionRef.current) {
+      setError('Speech recognition not supported in this browser. Use Chrome or Edge.');
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    } else {
+      setError(null);
+      recognitionRef.current.start();
+      setIsListening(true);
+      console.log('🎤 Listening...');
+    }
+  }, [isListening]);
+
+  // Initialize session and unlock audio on mount
+  useEffect(() => {
+    // Set sessionId on client-side only to avoid hydration mismatch
+    setSessionId(crypto.randomUUID());
     
-    // Add user message immediately
-    setMessages((prev) => [...prev, {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content,
-      timestamp: new Date(),
-    }]);
-    
-    setIsLoading(true);
-    
-    // Send to server
-    wsRef.current.send(JSON.stringify({
-      type: 'chat',
-      payload: {
-        session_id: sessionId,
-        message: content,
-      },
-    }));
-  }, [sessionId]);
-  
+    startSession();
+
+    // Unlock audio on any user interaction
+    const handleInteraction = () => {
+      unlockAudioContext();
+    };
+
+    document.body.addEventListener('click', handleInteraction);
+    document.body.addEventListener('keydown', handleInteraction);
+
+    return () => {
+      document.body.removeEventListener('click', handleInteraction);
+      document.body.removeEventListener('keydown', handleInteraction);
+    };
+  }, [startSession, unlockAudioContext]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+      if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
+      endSession();
+    };
+  }, [endSession]);
+
+  // =====================================================
+  // Send message via WebSocket
+  // =====================================================
+  const handleSendMessage = useCallback(
+    (content: string) => {
+      if (!content.trim() || wsStatus !== 'connected') return;
+
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: 'user', content, timestamp: new Date() },
+      ]);
+
+      setIsLoading(true);
+      setError(null);
+      requestStartRef.current = performance.now();
+
+      // Send through WebSocket — responses arrive progressively via callbacks
+      sendChat(content);
+    },
+    [wsStatus, sendChat]
+  );
+
   // Session controls
   const handlePause = () => setSessionStatus('paused');
   const handleResume = () => setSessionStatus('active');
   const handleEnd = () => {
     setSessionStatus('completed');
-    // Show summary
-    alert(`Session Complete!\n\nMetrics:\n- Accuracy: ${metrics.accuracy.toFixed(0)}%\n- Compliance: ${metrics.compliance.toFixed(0)}%\n- Confidence: ${metrics.confidence.toFixed(0)}%\n- Clarity: ${metrics.clarity.toFixed(0)}%`);
+    endSession();
+    alert(
+      `Session Complete!\n\nMetrics:\n- Accuracy: ${metrics.accuracy.toFixed(0)}%\n- Compliance: ${metrics.compliance.toFixed(0)}%\n- Confidence: ${metrics.confidence.toFixed(0)}%\n- Clarity: ${metrics.clarity.toFixed(0)}%`
+    );
   };
+
+  // =====================================================
+  // Audio Test Function (for debugging)
+  // =====================================================
+  const testAudio = useCallback(() => {
+    console.log('🧪 Testing basic audio playback...');
+    unlockAudioContext();
+
+    if (!audioElementRef.current) {
+      console.error('❌ Audio element not found!');
+      return;
+    }
+
+    // Create a simple beep sound (440Hz for 0.5s)
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+
+    oscillator.frequency.value = 440; // A4 note
+    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+
+    oscillator.start(audioContext.currentTime);
+    oscillator.stop(audioContext.currentTime + 0.5);
+
+    console.log('✅ Test beep should play now (440Hz, 0.5s)');
+    console.log('   └─ AudioContext state:', audioContext.state);
+
+    // Also test with actual audio element
+    setTimeout(() => {
+      const testUrl = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+      if (audioElementRef.current) {
+        audioElementRef.current.src = testUrl;
+        audioElementRef.current.play()
+          .then(() => console.log('✅ Audio element test passed'))
+          .catch((e) => console.error('❌ Audio element test failed:', e));
+      }
+    }, 600);
+  }, [unlockAudioContext]);
   
   return (
     <div style={{
@@ -164,6 +469,16 @@ export default function Index() {
       color: '#fff',
       fontFamily: 'system-ui, -apple-system, sans-serif',
     }}>
+      {/* Hidden audio element for playback — also used as master clock for lip-sync */}
+      <audio
+        ref={(el) => {
+          // Store ref AND pass to Avatar's LipSyncAnimator as master clock
+          (audioElementRef as React.MutableRefObject<HTMLAudioElement | null>).current = el;
+          avatarRef.current?.setAudioElement(el);
+        }}
+        style={{ display: 'none' }}
+      />
+
       {/* Header */}
       <header style={{
         padding: '16px 24px',
@@ -181,11 +496,19 @@ export default function Index() {
           <span style={{
             padding: '4px 8px',
             borderRadius: '4px',
-            backgroundColor: isConnected ? 'rgba(92, 184, 92, 0.2)' : 'rgba(217, 83, 79, 0.2)',
-            color: isConnected ? '#5cb85c' : '#d9534f',
+            backgroundColor: wsStatus === 'connected'
+              ? 'rgba(92, 184, 92, 0.2)'
+              : wsStatus === 'connecting'
+              ? 'rgba(240, 173, 78, 0.2)'
+              : 'rgba(217, 83, 79, 0.2)',
+            color: wsStatus === 'connected'
+              ? '#5cb85c'
+              : wsStatus === 'connecting'
+              ? '#f0ad4e'
+              : '#d9534f',
             fontSize: '12px',
           }}>
-            {isConnected ? '● Connected' : '○ Disconnected'}
+            {wsStatus === 'connected' ? '● Connected' : wsStatus === 'connecting' ? '◌ Connecting...' : '○ Disconnected'}
           </span>
         </div>
         <div>
@@ -193,6 +516,28 @@ export default function Index() {
             Medical Sales Training
           </span>
         </div>
+        {/* Audio Test Button (for debugging) */}
+        <button
+          onClick={testAudio}
+          style={{
+            padding: '8px 16px',
+            borderRadius: '6px',
+            border: '1px solid rgba(92, 184, 92, 0.5)',
+            backgroundColor: 'rgba(92, 184, 92, 0.1)',
+            color: '#5cb85c',
+            fontSize: '12px',
+            cursor: 'pointer',
+            transition: 'all 0.2s',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = 'rgba(92, 184, 92, 0.2)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = 'rgba(92, 184, 92, 0.1)';
+          }}
+        >
+          🔊 Test Audio
+        </button>
       </header>
       
       {/* Main Content */}
@@ -259,16 +604,29 @@ export default function Index() {
               <span style={{
                 padding: '4px 8px',
                 borderRadius: '4px',
-                backgroundColor: isSpeaking ? 'rgba(92, 184, 92, 0.2)' : 'rgba(255,255,255,0.1)',
-                color: isSpeaking ? '#5cb85c' : 'rgba(255,255,255,0.5)',
+                backgroundColor: isSpeaking ? 'rgba(92, 184, 92, 0.2)' : isListening ? 'rgba(217, 83, 79, 0.2)' : pipelineStage ? 'rgba(240, 173, 78, 0.2)' : 'rgba(255,255,255,0.1)',
+                color: isSpeaking ? '#5cb85c' : isListening ? '#d9534f' : pipelineStage ? '#f0ad4e' : 'rgba(255,255,255,0.5)',
                 fontSize: '12px',
               }}>
-                {isSpeaking ? '● Speaking' : '○ Idle'}
+                {isSpeaking ? '● Speaking' : isListening ? '🎤 Listening...' : pipelineStage ? `⏳ ${pipelineStage.toUpperCase()}...` : '○ Idle'}
               </span>
+              {latencyMs !== null && (
+                <span style={{
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  backgroundColor: latencyMs <= 5000 ? 'rgba(92, 184, 92, 0.15)' : 'rgba(217, 83, 79, 0.15)',
+                  color: latencyMs <= 5000 ? '#5cb85c' : '#d9534f',
+                  fontSize: '11px',
+                  fontFamily: 'monospace',
+                }}>
+                  ⏱ {(latencyMs / 1000).toFixed(1)}s
+                </span>
+              )}
             </div>
             <div style={{ height: '400px' }}>
               <Avatar
-                visemes={visemes}
+                ref={avatarRef}
+                modelUrl="/avatars/femal.glb"
                 isSpeaking={isSpeaking}
                 emotion={metrics.confidence > 70 ? 'happy' : metrics.confidence > 50 ? 'neutral' : 'thinking'}
               />
@@ -351,16 +709,62 @@ export default function Index() {
                 </div>
               )}
             </div>
+
+            {/* Error Display */}
+            {error && (
+              <div style={{
+                padding: '12px 16px',
+                borderRadius: '8px',
+                backgroundColor: 'rgba(217, 83, 79, 0.2)',
+                borderLeft: '4px solid #d9534f',
+                color: '#ffcccc',
+                fontSize: '14px',
+              }}>
+                <strong>Error:</strong> {error}
+              </div>
+            )}
             
-            {/* Input */}
-            <ChatInput
-              onSendMessage={handleSendMessage}
-              isLoading={isLoading}
-              disabled={!isConnected || sessionStatus !== 'active'}
-              placeholder={sessionStatus === 'active' 
-                ? "Type your message or choose a quick action..." 
-                : "Session paused"}
-            />
+            {/* Input + Mic */}
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
+              <div style={{ flex: 1 }}>
+                <ChatInput
+                  onSendMessage={handleSendMessage}
+                  isLoading={isLoading}
+                  disabled={sessionStatus !== 'active'}
+                  placeholder={isListening
+                    ? "🎤 Speak now..."
+                    : sessionStatus === 'active' 
+                      ? "Type your message or click the mic..." 
+                      : "Session paused"}
+                />
+              </div>
+              {/* Microphone Button */}
+              <button
+                type="button"
+                onClick={toggleMicrophone}
+                disabled={isLoading || sessionStatus !== 'active'}
+                style={{
+                  width: '48px',
+                  height: '48px',
+                  borderRadius: '50%',
+                  border: isListening ? '2px solid #d9534f' : '2px solid rgba(92, 184, 92, 0.5)',
+                  backgroundColor: isListening ? 'rgba(217, 83, 79, 0.3)' : 'rgba(92, 184, 92, 0.1)',
+                  color: isListening ? '#ff6b6b' : '#5cb85c',
+                  fontSize: '20px',
+                  cursor: isLoading ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.2s ease',
+                  opacity: isListening ? 0.7 : 1,
+                  transform: isListening ? 'scale(1.05)' : 'scale(1)',
+                  flexShrink: 0,
+                  marginBottom: '16px',
+                }}
+              >
+                {isListening ? '⏹' : '🎤'}
+              </button>
+            </div>
           </div>
         </div>
         
