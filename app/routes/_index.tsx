@@ -113,8 +113,10 @@ export default function Index() {
         console.log('LS frames:', blendshapes.length, blendshapes[0]);
         console.log(`✅ LipSync [${lipsyncTime}ms]: ${blendshapes.length} frames`);
         if (usingBrowserTTSRef.current) {
-          console.log('⏭️  Skipping lip-sync animation (browser TTS active, no audio sync)');
-          return;
+          // Browser TTS has no <audio> master clock — clear it so the animator
+          // falls back to performance.now() timing and runs immediately.
+          console.log('🕐 Browser TTS mode: using performance.now() for lip-sync clock');
+          avatarRef.current?.setAudioElement(null);
         }
         animateAvatar(blendshapes);
       },
@@ -297,7 +299,9 @@ export default function Index() {
   // Wire audio element → Avatar as master clock (re-run when Avatar mounts)
   // =====================================================
   useEffect(() => {
-    if (audioElementRef.current && avatarRef.current) {
+    // Don't re-wire when browser TTS is active — <audio> element won't be
+    // playing so currentTime===0 would stall the animator on every re-render.
+    if (audioElementRef.current && avatarRef.current && !usingBrowserTTSRef.current) {
       avatarRef.current.setAudioElement(audioElementRef.current);
     }
   });

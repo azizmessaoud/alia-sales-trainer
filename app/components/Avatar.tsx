@@ -67,6 +67,7 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
     const sceneRef = useRef<any>(null);
     const cameraRef = useRef<any>(null);
     const meshRef = useRef<any>(null);
+    const allMorphMeshesRef = useRef<any[]>([]);
     const animationRef = useRef<number>(0);
     const modelRef = useRef<any>(null);
     const lipSyncAnimatorRef = useRef<LipSyncAnimator | null>(null);
@@ -80,10 +81,12 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
       playLipSync: (blendshapeData: any[], startTime: number = 0) => {
         if (!blendshapeData.length || !meshRef.current) return;
 
-        // Ensure animator exists
+        // Ensure animator exists (fallback if model load didn't create it)
         if (!lipSyncAnimatorRef.current) {
+          const additionalMeshes = allMorphMeshesRef.current.filter((m: any) => m !== meshRef.current);
           lipSyncAnimatorRef.current = new LipSyncAnimator({
             mesh: meshRef.current,
+            additionalMeshes,
             smoothing: 0.35,
           });
           lipSyncAnimatorRef.current.debugLogBlendshapes();
@@ -228,27 +231,36 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
             // Find meshes with morph targets for lip-sync
             let morphTargetCount = 0;
             const availableTargets: string[] = [];
+            allMorphMeshesRef.current = [];
             
             model.traverse((child: any) => {
               if (child.isMesh && child.morphTargetInfluences && child.morphTargetDictionary) {
-                meshRef.current = child;
+                allMorphMeshesRef.current.push(child);
+                meshRef.current = child; // last mesh wins (Wolf3D_Teeth)
                 morphTargetCount++;
                 const targets = Object.keys(child.morphTargetDictionary);
                 availableTargets.push(...targets);
                 
                 console.log(`✅ Mesh "${child.name}" - ${targets.length} morph targets`);
                 console.log(`   Targets: ${targets.slice(0, 10).join(', ')}${targets.length > 10 ? '...' : ''}`);
-
-                // Construct animator once the primary mesh is ready
-                if (!lipSyncAnimatorRef.current) {
-                  lipSyncAnimatorRef.current = new LipSyncAnimator({
-                    mesh: child,
-                    smoothing: 0.35,
-                  });
-                  lipSyncAnimatorRef.current.debugLogBlendshapes();
-                }
               }
             });
+
+            // Use Wolf3D_Head as primary (contains the most relevant jaw/mouth geometry)
+            // Fall back to first available mesh if Wolf3D_Head not found
+            const primaryMesh =
+              allMorphMeshesRef.current.find((m: any) => m.name === 'Wolf3D_Head') ??
+              allMorphMeshesRef.current[0];
+            if (primaryMesh) {
+              meshRef.current = primaryMesh;
+              const additionalMeshes = allMorphMeshesRef.current.filter((m: any) => m !== primaryMesh);
+              lipSyncAnimatorRef.current = new LipSyncAnimator({
+                mesh: primaryMesh,
+                additionalMeshes,
+                smoothing: 0.35,
+              });
+              lipSyncAnimatorRef.current.debugLogBlendshapes();
+            }
             
             if (morphTargetCount > 0) {
               console.log(`✅ Model ready: ${morphTargetCount} mesh(es) with animation support`);
@@ -354,6 +366,22 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
           // Idle animation - subtle movement
           if (modelRef.current) {
             modelRef.current.rotation.y = Math.sin(Date.now() * 0.0005) * 0.05;
+          }
+
+          // 🔴 TEMP jitter test: oscillate jawOpen so we can confirm the mesh
+          // can visually animate independent of LipSyncAnimator. REMOVE once confirmed.
+          if (meshRef.current?.morphTargetInfluences && meshRef.current.morphTargetDictionary) {
+            const jawIdx = (meshRef.current.morphTargetDictionary as Record<string, number>)['jawOpen'] ?? -1;
+            if (jawIdx >= 0) {
+              const v = Math.abs(Math.sin(Date.now() * 0.004)); // ~0.6Hz jaw chew
+              meshRef.current.morphTargetInfluences[jawIdx] = v;
+              // mirror to other meshes
+              for (const m of allMorphMeshesRef.current) {
+                if (m !== meshRef.current && m.morphTargetInfluences && m.morphTargetInfluences.length > jawIdx) {
+                  m.morphTargetInfluences[jawIdx] = v;
+                }
+              }
+            }
           }
           
           renderer.render(scene, camera);

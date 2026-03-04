@@ -13,6 +13,8 @@ export interface Audio2FaceBlendshape {
 
 export interface LipSyncAnimatorConfig {
   mesh: THREE.Mesh;
+  /** Additional meshes to mirror blendshape influences to (e.g. Wolf3D_Teeth, EyeLeft) */
+  additionalMeshes?: THREE.Mesh[];
   audioContext?: AudioContext;
   smoothing?: number; // 0-1, higher = smoother but more delayed
 }
@@ -134,6 +136,9 @@ export class LipSyncAnimator {
   private neutralActive: boolean = false;
   private neutralSnapshot: number[] | null = null;
 
+  /** Additional meshes that receive mirrored morph influences each frame */
+  private additionalMeshes: THREE.Mesh[] = [];
+
   /**
    * Audio element used as the master clock for lip-sync timing.
    * When set, animation frames are driven by audio.currentTime
@@ -144,6 +149,7 @@ export class LipSyncAnimator {
 
   constructor(config: LipSyncAnimatorConfig) {
     this.mesh = config.mesh;
+    this.additionalMeshes = config.additionalMeshes ?? [];
     this.smoothingFactor = config.smoothing ?? 0.3;
 
     // Build mapping of blendshape indices
@@ -182,25 +188,22 @@ export class LipSyncAnimator {
   }
 
   /**
-   * Play lip-sync animation synced to audio
+   * Play lip-sync animation synced to audio.
+   * Call update(timestamp) from the Three.js render loop each frame.
    */
   play(audioCurrentTime: number = 0): void {
-    // If already playing, stop first so new data takes over
-    if (this.isPlaying) {
-      this.pause();
-    }
+    if (this.isPlaying) this.stop();
 
     this.isPlaying = true;
     const now = performance.now();
     this.startTime = now;
     this.lastTimestamp = now;
     this.lastBlendUpdate = now;
-    this.audioStartTime = audioCurrentTime * 1000; // Convert to ms
+    this.audioStartTime = audioCurrentTime * 1000;
     this.currentFrameIndex = 0;
     this.hasLoggedFirstFrame = false;
 
     console.log('▶️  Lip-sync animation started');
-    this.animate();
   }
 
   /**
@@ -214,119 +217,76 @@ export class LipSyncAnimator {
   }
 
   /**
-   * Pause animation
+   * Pause animation (keeps current frame visible)
    */
   pause(): void {
     this.isPlaying = false;
-    if (this.animationFrameId !== null) {
-      cancelAnimationFrame(this.animationFrameId);
-      this.animationFrameId = null;
-    }
     console.log('⏸️  Lip-sync animation paused');
   }
 
   /**
-   * Stop animation and reset
+   * Stop animation and reset to neutral
    */
   stop(): void {
-    this.pause();
+    this.isPlaying = false;
     this.currentFrameIndex = 0;
     this.resetBlendshapes();
     console.log('⏹️  Lip-sync animation stopped');
   }
 
   /**
-   * Animation loop
+   * Drive one frame of lip-sync animation.
+   * MUST be called from the Three.js render loop BEFORE renderer.render()
+   * so that morph target writes are committed in the same frame as the draw call.
    */
-  private animate = (timestamp?: number): void => {
+  update(timestamp: number): void {
     if (!this.isPlaying || this.blendshapeData.length === 0) return;
 
-    const now = timestamp ?? performance.now();
+    const now = timestamp;
     const deltaSeconds = (now - this.lastTimestamp) / 1000;
     this.lastTimestamp = now;
-
-    // Throttle blendshape application to ~blendFps while keeping render loop smooth
-    const minInterval = 1000 / this.blendFps;
-    if (now - this.lastBlendUpdate < minInterval) {
-      this.animationFrameId = requestAnimationFrame(this.animate);
-      return;
-    }
-    this.lastBlendUpdate = now;
-
-    // Diagnostic: log details on first rendered frame
-    if (!this.hasLoggedFirstFrame) {
-      this.hasLoggedFirstFrame = true;
-      const firstTs = this.blendshapeData[0]?.timestamp ?? -1;
-      const lastTs = this.blendshapeData[this.blendshapeData.length - 1]?.timestamp ?? -1;
-      const sampleKeys = Object.keys(this.blendshapeData[0]?.blendshapes ?? {});
-      const matchedIndices = sampleKeys.filter(k => this.findMorphTargetIndices(k).length > 0);
-      console.log('🔍 Lip-sync first-frame diagnostic:', {
-        totalFrames: this.blendshapeData.length,
-        firstTimestamp: firstTs,
-        lastTimestamp: lastTs,
-        audioStartTimeMs: this.audioStartTime,
-        speakingFactor: this.speakingFactor,
-        sampleBlendshapeKeys: sampleKeys.slice(0, 10),
-        matchedMorphTargets: matchedIndices.length,
-        unmatchedKeys: sampleKeys.filter(k => this.findMorphTargetIndices(k).length === 0),
-      });
-    }
 
     this.updateSpeakingFactor(deltaSeconds);
     this.updateNeutralFade(deltaSeconds);
 
-    // ── Master clock: prefer audio element time for perfect sync ──
+    // ── Master clock ──
     let elapsedTime: number;
     if (this.audioElement) {
       const audioMs = this.audioElement.currentTime * 1000;
-      if (this.audioElement.paused && audioMs === 0) {
-        // Audio hasn't started yet – keep loop alive but don't advance
-        this.animationFrameId = requestAnimationFrame(this.animate);
-        return;
-      }
+      if (this.audioElement.paused && audioMs === 0) return; // not started yet
       elapsedTime = audioMs;
     } else {
-      // Fallback: performance.now() based (no audio element)
+      // performance.now() fallback (browser TTS / mock)
       elapsedTime = now - this.startTime + this.audioStartTime;
     }
 
-    // Find current frame based on timestamp
-    let frameIndex = this.currentFrameIndex;
+    // Advance frame pointer
     while (
-      frameIndex < this.blendshapeData.length - 1 &&
-      this.blendshapeData[frameIndex + 1].timestamp < elapsedTime
+      this.currentFrameIndex < this.blendshapeData.length - 1 &&
+      this.blendshapeData[this.currentFrameIndex + 1].timestamp <= elapsedTime
     ) {
-      frameIndex++;
+      this.currentFrameIndex++;
     }
 
-    this.currentFrameIndex = frameIndex;
-
-    // Interpolate between frames for smooth animation
-    const currentFrame = this.blendshapeData[frameIndex];
+    const currentFrame = this.blendshapeData[this.currentFrameIndex];
     const nextFrame =
-      frameIndex < this.blendshapeData.length - 1
-        ? this.blendshapeData[frameIndex + 1]
+      this.currentFrameIndex < this.blendshapeData.length - 1
+        ? this.blendshapeData[this.currentFrameIndex + 1]
         : currentFrame;
 
-    let t = 0; // Interpolation factor
+    let t = 0;
     if (nextFrame.timestamp !== currentFrame.timestamp) {
-      const frameStart = currentFrame.timestamp;
-      const frameDuration = nextFrame.timestamp - currentFrame.timestamp;
-      t = (elapsedTime - frameStart) / frameDuration;
-      t = Math.max(0, Math.min(1, t)); // Clamp to 0-1
+      t = (elapsedTime - currentFrame.timestamp) / (nextFrame.timestamp - currentFrame.timestamp);
+      t = Math.max(0, Math.min(1, t));
     }
 
-    // Apply blendshapes with interpolation
     this.applyBlendshapes(currentFrame.blendshapes, nextFrame.blendshapes, t);
 
-    // Continue animation
-    if (frameIndex < this.blendshapeData.length - 1) {
-      this.animationFrameId = requestAnimationFrame(this.animate);
-    } else {
+    if (this.currentFrameIndex >= this.blendshapeData.length - 1) {
       this.isPlaying = false;
       console.log('✅ Lip-sync animation completed');
     }
-  };
+  }
 
   /**
    * Apply blendshapes to morph targets with smooth interpolation
@@ -392,6 +352,22 @@ export class LipSyncAnimator {
       }
 
       this.lastBlendshapeValues[blendshapeName] = baseValue;
+    }
+
+    // Mirror all influences to additional meshes (EyeLeft/EyeRight handled too)
+    this.mirrorToAdditionalMeshes();
+  }
+
+  /** Copy primary mesh morph influences to all additional meshes */
+  private mirrorToAdditionalMeshes(): void {
+    if (!this.mesh.morphTargetInfluences || this.additionalMeshes.length === 0) return;
+    const src = this.mesh.morphTargetInfluences;
+    for (const m of this.additionalMeshes) {
+      if (m.morphTargetInfluences && m.morphTargetInfluences.length === src.length) {
+        for (let i = 0; i < src.length; i++) {
+          m.morphTargetInfluences[i] = src[i];
+        }
+      }
     }
   }
 
