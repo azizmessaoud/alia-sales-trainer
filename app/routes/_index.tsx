@@ -56,6 +56,7 @@ export default function Index() {
   });
   const [sessionStatus, setSessionStatus] = useState<'active' | 'paused' | 'completed'>('active');
   const [error, setError] = useState<string | null>(null);
+  const [lipSyncDebug, setLipSyncDebug] = useState<{ jawMin: number; jawMax: number; jawCurrent: number; speakingFactor: number; elapsedMs: number; frameIndex: number; frameCount: number; isPlaying: boolean; clockSource: string; offsetMs: number; peakJaw: number; peakFrame: number; peakElapsed: number; appliedTargets: number } | null>(null);
 
   // Refs
   const avatarRef = useRef<AvatarHandle>(null);
@@ -68,6 +69,7 @@ export default function Index() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioUnlockedRef = useRef(false);
   const usingBrowserTTSRef = useRef(false);
+  const ttsStartTimeRef = useRef<number>(0); // when TTS started speaking (performance.now)
 
   // =====================================================
   // Full-Duplex WebSocket — progressive pipeline
@@ -97,6 +99,9 @@ export default function Index() {
           audioPreview: audioBase64 ? audioBase64.substring(0, 50) + '...' : 'null',
         });
 
+        // Stamp the clock for BOTH paths so onLipSync never divides by a stale 0
+        ttsStartTimeRef.current = performance.now();
+
         if (isMock) {
           console.log('🔊 Using browser TTS fallback');
           usingBrowserTTSRef.current = true;
@@ -109,16 +114,41 @@ export default function Index() {
       },
 
       // Stage 3 arrives: animate avatar mouth
-      onLipSync: (blendshapes, lipsyncTime, timeline) => {
-        console.log('LS frames:', blendshapes.length, blendshapes[0]);
-        console.log(`✅ LipSync [${lipsyncTime}ms]: ${blendshapes.length} frames`);
+      onLipSync: (blendshapes, lipsyncTime, timeline, isMock) => {
+        console.log(`✅ LipSync [${lipsyncTime}ms]: ${blendshapes.length} frames${isMock ? ' (mock)' : ''}`);
+
         if (usingBrowserTTSRef.current) {
-          // Browser TTS has no <audio> master clock — clear it so the animator
-          // falls back to performance.now() timing and runs immediately.
           console.log('🕐 Browser TTS mode: using performance.now() for lip-sync clock');
           avatarRef.current?.setAudioElement(null);
+        } else {
+          // Wire <audio> element as master clock BEFORE play() so update() finds it
+          avatarRef.current?.setAudioElement(audioElementRef.current);
         }
-        animateAvatar(blendshapes);
+        // Inform animator of mock vs real data (affects smoothing + speaking speed)
+        avatarRef.current?.setIsMockData?.(isMock === true);
+        // Compute jaw range for debug overlay
+        const jawVals = blendshapes.map(f => (f.blendshapes as any).jawOpen ?? 0);
+        const jMin = jawVals.length ? Math.min(...jawVals) : 0;
+        const jMax = jawVals.length ? Math.max(...jawVals) : 0;
+        setLipSyncDebug(prev => ({
+          jawMin: jMin,
+          jawMax: jMax,
+          jawCurrent: prev?.jawCurrent ?? 0,
+          speakingFactor: prev?.speakingFactor ?? 0,
+          elapsedMs: prev?.elapsedMs ?? 0,
+          frameIndex: prev?.frameIndex ?? 0,
+          frameCount: blendshapes.length,
+          isPlaying: prev?.isPlaying ?? false,
+          clockSource: prev?.clockSource ?? 'perf',
+          offsetMs: prev?.offsetMs ?? 0,
+          peakJaw: prev?.peakJaw ?? 0,
+          peakFrame: prev?.peakFrame ?? 0,
+          peakElapsed: prev?.peakElapsed ?? 0,
+          appliedTargets: prev?.appliedTargets ?? 0,
+        }));
+        // Always start from offset 0 — the audio element clock (real audio)
+        // or perf clock (browser TTS) handles synchronisation inside update().
+        animateAvatar(blendshapes, 0);
       },
 
       // Full pipeline done
@@ -161,6 +191,38 @@ export default function Index() {
     } catch (err) {
       console.error('❌ AudioContext unlock failed:', err);
     }
+  }, []);
+
+  // =====================================================
+  // Lip-sync debug stats polling (updates jawCurrent + speakingFactor each frame)
+  // =====================================================
+  useEffect(() => {
+    let rafId: number;
+    const poll = () => {
+      const stats = avatarRef.current?.getDebugStats?.();
+      if (stats) {
+        setLipSyncDebug(prev =>
+          prev ? {
+            ...prev,
+            jawCurrent: stats.jawOpen,
+            speakingFactor: stats.speakingFactor,
+            elapsedMs: stats.elapsedMs,
+            frameIndex: stats.frameIndex,
+            frameCount: stats.frameCount,
+            isPlaying: stats.isPlaying,
+            clockSource: stats.clockSource,
+            offsetMs: stats.offsetMs,
+            peakJaw: stats.peakJaw,
+            peakFrame: stats.peakFrame,
+            peakElapsed: stats.peakElapsed,
+            appliedTargets: stats.appliedTargets,
+          } : null
+        );
+      }
+      rafId = requestAnimationFrame(poll);
+    };
+    rafId = requestAnimationFrame(poll);
+    return () => cancelAnimationFrame(rafId);
   }, []);
 
   // =====================================================
@@ -277,23 +339,25 @@ export default function Index() {
   // =====================================================
   // Avatar lip-sync animation
   // =====================================================
-  const animateAvatar = useCallback((blendshapes: Blendshape[]) => {
+  const animateAvatar = useCallback((blendshapes: Blendshape[], audioOffsetSec: number = 0) => {
     if (!blendshapes.length || !avatarRef.current) return;
 
-    const animDurationMs =
-      blendshapes[blendshapes.length - 1].timestamp + 33;
-
-    // Audio element is the master clock — no need to pass audioTime manually.
-    // LipSyncAnimator reads audioElement.currentTime each frame.
-    console.log(`▶️ Animating ${blendshapes.length} frames over ${animDurationMs}ms (audio-clock master)`);
-    avatarRef.current.playLipSync(blendshapes);
-
-    // Auto-stop after animation completes
-    if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
-    animationTimerRef.current = setTimeout(() => {
-      avatarRef.current?.stopLipSync();
-    }, animDurationMs + 200);
+    console.log(`▶️ Animating ${blendshapes.length} frames, offset=${(audioOffsetSec * 1000).toFixed(0)}ms`);
+    avatarRef.current.playLipSync(blendshapes, audioOffsetSec);
   }, []);
+
+  // =====================================================
+  // Stop lip-sync when speaking ends (audio onended / browser TTS onend)
+  // =====================================================
+  useEffect(() => {
+    if (!isSpeaking) {
+      avatarRef.current?.stopLipSync();
+      if (animationTimerRef.current) {
+        clearTimeout(animationTimerRef.current);
+        animationTimerRef.current = null;
+      }
+    }
+  }, [isSpeaking]);
 
   // =====================================================
   // Wire audio element → Avatar as master clock (re-run when Avatar mounts)
@@ -303,6 +367,11 @@ export default function Index() {
     // playing so currentTime===0 would stall the animator on every re-render.
     if (audioElementRef.current && avatarRef.current && !usingBrowserTTSRef.current) {
       avatarRef.current.setAudioElement(audioElementRef.current);
+      console.log('🔗 Audio element wired to lip-sync animator (clock: audio)', {
+        paused: audioElementRef.current.paused,
+        src: audioElementRef.current.src ? 'set' : 'empty',
+        currentTime: audioElementRef.current.currentTime,
+      });
     }
   });
 
@@ -365,8 +434,6 @@ export default function Index() {
   useEffect(() => {
     // Set sessionId on client-side only to avoid hydration mismatch
     setSessionId(crypto.randomUUID());
-    
-    startSession();
 
     // Unlock audio on any user interaction
     const handleInteraction = () => {
@@ -380,7 +447,16 @@ export default function Index() {
       document.body.removeEventListener('click', handleInteraction);
       document.body.removeEventListener('keydown', handleInteraction);
     };
-  }, [startSession, unlockAudioContext]);
+  }, [unlockAudioContext]);
+
+  // Start session only once WebSocket is connected
+  const hasStartedSession = useRef(false);
+  useEffect(() => {
+    if (wsStatus === 'connected' && !hasStartedSession.current) {
+      hasStartedSession.current = true;
+      startSession();
+    }
+  }, [wsStatus, startSession]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -627,13 +703,44 @@ export default function Index() {
                 </span>
               )}
             </div>
-            <div style={{ height: '400px' }}>
+            <div style={{ height: '400px', position: 'relative' }}>
               <Avatar
                 ref={avatarRef}
                 modelUrl="/avatars/femal.glb"
                 isSpeaking={isSpeaking}
                 emotion={metrics.confidence > 70 ? 'happy' : metrics.confidence > 50 ? 'neutral' : 'thinking'}
               />
+              {lipSyncDebug && (
+                <div style={{
+                  position: 'absolute',
+                  bottom: 8,
+                  left: 8,
+                  padding: '6px 10px',
+                  backgroundColor: 'rgba(0,0,0,0.72)',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  fontFamily: 'monospace',
+                  color: '#7fff7f',
+                  lineHeight: 1.6,
+                  pointerEvents: 'none',
+                  userSelect: 'none',
+                }}>
+                  <div>jawOpen: {lipSyncDebug.jawCurrent.toFixed(3)} &nbsp;range [{lipSyncDebug.jawMin.toFixed(3)} .. {lipSyncDebug.jawMax.toFixed(3)}]</div>
+                  <div>speakingFactor: {lipSyncDebug.speakingFactor.toFixed(3)}</div>
+                  <div>clock: {lipSyncDebug.clockSource} &nbsp;elapsed: {lipSyncDebug.elapsedMs.toFixed(0)}ms &nbsp;offset: {lipSyncDebug.offsetMs}ms</div>
+                  <div>frame: {lipSyncDebug.frameIndex}/{lipSyncDebug.frameCount} &nbsp;targets: {lipSyncDebug.appliedTargets} &nbsp;playing: {lipSyncDebug.isPlaying ? 'yes' : 'no'}
+                    {lipSyncDebug.isPlaying && (
+                      <span style={{ marginLeft: 8, color: lipSyncDebug.frameIndex > 0 ? '#7fff7f' : '#ff7f7f' }}>
+                        {lipSyncDebug.frameIndex > 0 ? 'SYNC OK' : 'WAITING'}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ color: '#ffff7f', marginTop: 2, borderTop: '1px solid rgba(255,255,255,0.15)', paddingTop: 2 }}>
+                    peak: jaw={lipSyncDebug.peakJaw.toFixed(3)} frame={lipSyncDebug.peakFrame}/{lipSyncDebug.frameCount} elapsed={lipSyncDebug.peakElapsed.toFixed(0)}ms targets={lipSyncDebug.appliedTargets}
+                  </div>
+                </div>
+              )}
+              {/* Force Jaw test button removed — use debug panel instead */}
             </div>
           </div>
           

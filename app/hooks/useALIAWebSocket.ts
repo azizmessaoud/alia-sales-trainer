@@ -46,7 +46,7 @@ export interface UseALIAWebSocketOptions {
   /** Fired when TTS audio arrives (start playback, or browser TTS if mock) */
   onTTSAudio?: (audioBase64: string, duration: number, ttsTime: number, isMock: boolean) => void;
   /** Fired when lip-sync blendshapes arrive (animate avatar) */
-  onLipSync?: (blendshapes: Blendshape[], lipsyncTime: number, timeline?: LipSyncTimeline) => void;
+  onLipSync?: (blendshapes: Blendshape[], lipsyncTime: number, timeline?: LipSyncTimeline, isMock?: boolean) => void;
   /** Fired when the full pipeline is done */
   onPipelineComplete?: (totalTime: number, breakdown: PipelineBreakdown) => void;
   /** Fired on each pipeline stage change */
@@ -94,6 +94,10 @@ export function useALIAWebSocket(
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelay = useRef(1000);
   const sessionIdRef = useRef<string | null>(null);
+  /** Guard: false while the effect is cleaned up (React Strict Mode) */
+  const mountedRef = useRef(false);
+  /** Pending connection timer — lets us cancel before the socket is created */
+  const connectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [currentStage, setCurrentStage] = useState<string | null>(null);
@@ -106,47 +110,69 @@ export function useALIAWebSocket(
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    setStatus('connecting');
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      console.log('[WS] Connected to', url);
-      setStatus('connected');
-      reconnectDelay.current = 1000; // reset backoff
-    };
-
-    ws.onclose = () => {
-      console.log('[WS] Disconnected');
-      setStatus('disconnected');
-      setCurrentStage(null);
+    // Close any lingering socket from a previous cycle
+    if (wsRef.current) {
+      wsRef.current.onopen = null;
+      wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
+      wsRef.current.onmessage = null;
+      wsRef.current.close();
       wsRef.current = null;
+    }
 
-      if (autoReconnect) {
-        const delay = Math.min(reconnectDelay.current, maxReconnectDelay);
-        console.log(`[WS] Reconnecting in ${delay}ms...`);
-        reconnectTimer.current = setTimeout(() => {
-          reconnectDelay.current = Math.min(
-            reconnectDelay.current * 1.5,
-            maxReconnectDelay
-          );
-          connect();
-        }, delay);
-      }
-    };
+    // Defer actual socket creation so React Strict Mode cleanup can cancel
+    // before the browser even starts the TCP handshake.
+    if (connectTimer.current) clearTimeout(connectTimer.current);
+    setStatus('connecting');
+    connectTimer.current = setTimeout(() => {
+      connectTimer.current = null;
+      if (!mountedRef.current) return; // Strict Mode already tore us down
 
-    ws.onerror = (e) => {
-      console.error('[WS] Error:', e);
-    };
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
 
-    ws.onmessage = (event) => {
-      try {
-        const { type, payload } = JSON.parse(event.data);
-        handleServerMessage(type, payload);
-      } catch {
-        console.warn('[WS] Invalid message from server');
-      }
-    };
+      ws.onopen = () => {
+        if (!mountedRef.current) return;
+        console.log('[WS] Connected to', url);
+        setStatus('connected');
+        reconnectDelay.current = 1000; // reset backoff
+      };
+
+      ws.onclose = () => {
+        if (!mountedRef.current) return; // Strict Mode cleanup — don't reconnect
+        console.log('[WS] Disconnected');
+        setStatus('disconnected');
+        setCurrentStage(null);
+        wsRef.current = null;
+
+        if (autoReconnect) {
+          const delay = Math.min(reconnectDelay.current, maxReconnectDelay);
+          console.log(`[WS] Reconnecting in ${delay}ms...`);
+          reconnectTimer.current = setTimeout(() => {
+            reconnectDelay.current = Math.min(
+              reconnectDelay.current * 1.5,
+              maxReconnectDelay
+            );
+            connect();
+          }, delay);
+        }
+      };
+
+      ws.onerror = () => {
+        // Suppress noisy error events during Strict Mode teardown
+        if (!mountedRef.current) return;
+        console.warn('[WS] Connection error');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const { type, payload } = JSON.parse(event.data);
+          handleServerMessage(type, payload);
+        } catch {
+          console.warn('[WS] Invalid message from server');
+        }
+      };
+    }, 0);
   }, [url, autoReconnect, maxReconnectDelay]);
 
   // ─── Server message dispatcher ──────────────
@@ -180,7 +206,7 @@ export function useALIAWebSocket(
         break;
 
       case 'lipsync_blendshapes':
-        cbRef.current.onLipSync?.(payload.blendshapes, payload.lipsyncTime, payload.timeline);
+        cbRef.current.onLipSync?.(payload.blendshapes, payload.lipsyncTime, payload.timeline, payload.isMock ?? false);
         break;
 
       case 'pipeline_complete':
@@ -207,10 +233,20 @@ export function useALIAWebSocket(
 
   // ─── Lifecycle ──────────────────────────────
   useEffect(() => {
+    mountedRef.current = true;
     connect();
     return () => {
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      wsRef.current?.close();
+      mountedRef.current = false;
+      if (connectTimer.current) { clearTimeout(connectTimer.current); connectTimer.current = null; }
+      if (reconnectTimer.current) { clearTimeout(reconnectTimer.current); reconnectTimer.current = null; }
+      if (wsRef.current) {
+        wsRef.current.onopen = null;
+        wsRef.current.onclose = null;
+        wsRef.current.onerror = null;
+        wsRef.current.onmessage = null;
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, [connect]);
 

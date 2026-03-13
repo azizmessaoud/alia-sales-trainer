@@ -8,6 +8,27 @@ import { generateResponse, generateLipSync } from './nvidia-nim.server';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { synthesizeSpeechNvidia, validateTTSResponse } from './tts-nvidia.server';
 
+function logPipelineTiming(args: {
+  sessionId: string;
+  stage: string;
+  durationMs: number;
+  error?: string | null;
+  meta?: Record<string, unknown>;
+}) {
+  const { sessionId, stage, durationMs, error = null, meta = {} } = args;
+  console.log(
+    JSON.stringify({
+      kind: 'pipeline_timing',
+      sessionId,
+      stage,
+      durationMs,
+      error,
+      timestamp: Date.now(),
+      ...meta,
+    })
+  );
+}
+
 /**
  * Orchestration State - represents the conversation pipeline state
  */
@@ -106,6 +127,11 @@ export async function orchestrateConversation(
       throw new Error('LLM failed to generate response');
     }
     state.metrics!.llmTime = Date.now() - llmStart;
+    logPipelineTiming({
+      sessionId,
+      stage: 'llm',
+      durationMs: state.metrics!.llmTime,
+    });
     console.log(`\u2705 Stage 2: LLM response generated [${state.metrics!.llmTime}ms]`);
     console.log(`   Response: "${state.llmResponse.substring(0, 80)}..."`);
 
@@ -121,6 +147,12 @@ export async function orchestrateConversation(
     state.audioBuffer = ttsResponse.audio;
     state.audioDuration = ttsResponse.duration;
     state.metrics!.ttsTime = Date.now() - ttsStart;
+    logPipelineTiming({
+      sessionId,
+      stage: 'tts',
+      durationMs: state.metrics!.ttsTime,
+      meta: { audioDuration: state.audioDuration },
+    });
     console.log(`\u2705 Stage 3: Audio synthesized [${state.metrics!.ttsTime}ms]`);
     console.log(`   Audio: ${state.audioBuffer.length} bytes, ${state.audioDuration.toFixed(2)}s`);
 
@@ -131,20 +163,62 @@ export async function orchestrateConversation(
       state.blendshapes = await Promise.race([
         generateLipSync(state.audioBuffer),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('LipSync timeout')), 2000)
+          setTimeout(() => reject(new Error('LipSync timeout: 2000ms exceeded')), 2000)
         ),
       ]);
     } catch (lsErr) {
-      console.warn('⚠️ LipSync timeout/error, using empty blendshapes');
-      state.blendshapes = [];
+      const errorMessage = lsErr instanceof Error ? lsErr.message : String(lsErr);
+      console.error(`❌ LipSync failed: ${errorMessage}`);
+      
+      // If we have audio data, generate minimal blendshapes as fallback
+      if (state.audioBuffer) {
+        console.log('⚠️ Generating minimal blendshapes as fallback');
+        state.blendshapes = [];
+        const duration = state.audioDuration || 0;
+        const frameCount = Math.floor(duration * 30);
+        
+        for (let i = 0; i < frameCount; i++) {
+          state.blendshapes.push({
+            timestamp: i * (1000 / 30),
+            blendshapes: {
+              jawOpen: 0,
+              mouthSmileLeft: 0,
+              mouthSmileRight: 0,
+              mouthFunnel: 0,
+              eyeBlinkLeft: 0,
+              eyeBlinkRight: 0,
+              eyeWideLeft: 0,
+              eyeWideRight: 0
+            }
+          });
+        }
+      } else {
+        state.blendshapes = [];
+      }
     }
     state.metrics!.lipsyncTime = Date.now() - lipsyncStart;
+    logPipelineTiming({
+      sessionId,
+      stage: 'lipsync',
+      durationMs: state.metrics!.lipsyncTime,
+      meta: { frameCount: state.blendshapes.length },
+    });
     console.log(`✅ Stage 4: Blendshapes generated [${state.metrics!.lipsyncTime}ms]`);
     console.log(`   Frames: ${state.blendshapes.length} @ 30fps`);
 
     // Stage 5: Complete
     state.stage = 'complete';
     state.metrics!.totalTime = Date.now() - state.timestamp;
+    logPipelineTiming({
+      sessionId,
+      stage: 'pipeline_total',
+      durationMs: state.metrics!.totalTime,
+      meta: {
+        llmTime: state.metrics!.llmTime,
+        ttsTime: state.metrics!.ttsTime,
+        lipsyncTime: state.metrics!.lipsyncTime,
+      },
+    });
     console.log(`\n🎉 Orchestration complete [${state.metrics!.totalTime}ms total]`);
     console.log(`   Pipeline: LLM(${state.metrics!.llmTime}ms) → TTS(${state.metrics!.ttsTime}ms) → LipSync(${state.metrics!.lipsyncTime}ms)`);
 
@@ -152,6 +226,12 @@ export async function orchestrateConversation(
   } catch (error) {
     state.stage = 'error';
     state.error = error instanceof Error ? error.message : String(error);
+    logPipelineTiming({
+      sessionId,
+      stage: 'pipeline_error',
+      durationMs: Date.now() - state.timestamp,
+      error: state.error,
+    });
     console.error(`❌ Orchestration failed: ${state.error}`);
     return state;
   }

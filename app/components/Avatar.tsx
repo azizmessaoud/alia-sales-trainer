@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState, lazy, Suspense } from 'react';
 import { useImperativeHandle, forwardRef } from 'react';
 import LipSyncAnimator from '~/lib/lip-sync-animator.client';
+import type { LipSyncDebugStats } from '~/lib/lip-sync-animator.client';
 
 // =====================================================
 // Types
@@ -46,6 +47,14 @@ export interface AvatarHandle {
   getLipSyncPlaying: () => boolean;
   /** Pass the <audio> element so LipSyncAnimator uses it as the master clock */
   setAudioElement: (el: HTMLAudioElement | null) => void;
+  /** Inform the animator whether current blendshape data came from the mock generator */
+  setIsMockData: (isMock: boolean) => void;
+  /** Adjust timing offset in ms (positive = visemes arrive later, negative = earlier) */
+  setLipSyncOffset: (offsetMs: number) => void;
+  /** Return live jaw and speaking-factor values for the debug overlay */
+  getDebugStats: () => LipSyncDebugStats;
+  /** Direct access to the primary morph-target mesh (for diagnostic bypass) */
+  getMesh: () => any;
 }
 
 // =====================================================
@@ -87,9 +96,8 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
           lipSyncAnimatorRef.current = new LipSyncAnimator({
             mesh: meshRef.current,
             additionalMeshes,
-            smoothing: 0.35,
+            smoothing: 0.15,
           });
-          lipSyncAnimatorRef.current.debugLogBlendshapes();
         }
 
         lipSyncAnimatorRef.current.setBlendshapeData(blendshapeData);
@@ -120,12 +128,21 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
         if (el && meshRef.current && !lipSyncAnimatorRef.current) {
           lipSyncAnimatorRef.current = new LipSyncAnimator({
             mesh: meshRef.current,
-            smoothing: 0.35,
+            smoothing: 0.15,
           });
-          lipSyncAnimatorRef.current.debugLogBlendshapes();
         }
         lipSyncAnimatorRef.current?.setAudioElement(el);
       },
+      setIsMockData: (isMock: boolean) => {
+        lipSyncAnimatorRef.current?.setIsMockData(isMock);
+      },
+      setLipSyncOffset: (offsetMs: number) => {
+        lipSyncAnimatorRef.current?.setLipSyncOffset(offsetMs);
+      },
+      getDebugStats: () => {
+        return lipSyncAnimatorRef.current?.getDebugStats?.() ?? { jawOpen: 0, speakingFactor: 0, elapsedMs: 0, frameIndex: 0, frameCount: 0, isPlaying: false, clockSource: 'perf' as const, offsetMs: 0, peakJaw: 0, peakFrame: 0, peakElapsed: 0, appliedTargets: 0 };
+      },
+      getMesh: () => meshRef.current ?? null,
     }), []);
 
     // Apply blendshapes directly to mesh (without LipSyncAnimator)
@@ -242,7 +259,6 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
                 availableTargets.push(...targets);
                 
                 console.log(`✅ Mesh "${child.name}" - ${targets.length} morph targets`);
-                console.log(`   Targets: ${targets.slice(0, 10).join(', ')}${targets.length > 10 ? '...' : ''}`);
               }
             });
 
@@ -257,14 +273,12 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
               lipSyncAnimatorRef.current = new LipSyncAnimator({
                 mesh: primaryMesh,
                 additionalMeshes,
-                smoothing: 0.35,
+                smoothing: 0.15,
               });
-              lipSyncAnimatorRef.current.debugLogBlendshapes();
             }
             
             if (morphTargetCount > 0) {
-              console.log(`✅ Model ready: ${morphTargetCount} mesh(es) with animation support`);
-              console.log(`   Total unique targets: ${new Set(availableTargets).size}`);
+              console.log(`✅ Model ready: ${morphTargetCount} mesh(es), ${new Set(availableTargets).size} unique targets`);
             } else {
               console.warn('⚠️  Model loaded but no morph targets found - static avatar only');
             }
@@ -286,30 +300,54 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
             
             // Create fallback avatar (simple sphere)
             const geometry = new THREE.SphereGeometry(1.5, 32, 32);
+            const fallbackMorphNames = [
+              'jawOpen',
+              'mouthSmileLeft',
+              'mouthSmileRight',
+              'mouthFunnel',
+              'mouthPucker',
+            ];
             
-            // Create morph targets for visemes
-            const morphAttributes: number[][] = [];
+            // Create named morph targets so Three.js builds a usable morphTargetDictionary
+            const morphAttributes: any[] = [];
             const positions = geometry.attributes.position;
             
-            for (let i = 0; i < 5; i++) {
+            for (let i = 0; i < fallbackMorphNames.length; i++) {
               const morphPositions = [];
               for (let j = 0; j < positions.count; j++) {
                 const x = positions.getX(j);
                 const y = positions.getY(j);
                 const z = positions.getZ(j);
-                
-                if (y < 0) {
-                  morphPositions.push(x * (1 + i * 0.1), y * (1 - i * 0.15), z * (1 + i * 0.05));
-                } else {
-                  morphPositions.push(x, y, z);
+
+                let nextX = x;
+                let nextY = y;
+                let nextZ = z;
+
+                if (fallbackMorphNames[i] === 'jawOpen' && y < 0) {
+                  nextY = y * 0.82;
+                  nextZ = z * 1.04;
+                } else if (fallbackMorphNames[i] === 'mouthSmileLeft' && y < 0.1 && x < 0) {
+                  nextX = x * 1.08;
+                  nextY = y * 1.03;
+                } else if (fallbackMorphNames[i] === 'mouthSmileRight' && y < 0.1 && x > 0) {
+                  nextX = x * 1.08;
+                  nextY = y * 1.03;
+                } else if (fallbackMorphNames[i] === 'mouthFunnel' && y < 0.15) {
+                  nextX = x * 0.88;
+                  nextZ = z * 1.08;
+                } else if (fallbackMorphNames[i] === 'mouthPucker' && y < 0.15) {
+                  nextX = x * 0.80;
+                  nextZ = z * 1.12;
                 }
+
+                morphPositions.push(nextX, nextY, nextZ);
               }
-              morphAttributes.push(morphPositions);
+              const attr = new THREE.Float32BufferAttribute(morphPositions, 3);
+              attr.name = fallbackMorphNames[i];
+              morphAttributes.push(attr);
             }
             
-            geometry.morphAttributes.position = morphAttributes.map(pos => 
-              new THREE.Float32BufferAttribute(pos, 3)
-            );
+            geometry.morphAttributes.position = morphAttributes;
             
             const material = new THREE.MeshStandardMaterial({
               color: 0x4a90d9,
@@ -319,9 +357,17 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
             
             const head = new THREE.Mesh(geometry, material);
             head.name = 'avatarHead';
+            head.updateMorphTargets();
             scene.add(head);
             meshRef.current = head;
             modelRef.current = head;
+            allMorphMeshesRef.current = [head];
+            lipSyncAnimatorRef.current = new LipSyncAnimator({
+              mesh: head,
+              additionalMeshes: [],
+              smoothing: 0.15,
+            });
+            console.log('✅ Fallback avatar ready with morph targets:', Object.keys(head.morphTargetDictionary || {}));
             
             // Eyes
             const eyeGeometry = new THREE.SphereGeometry(0.15, 16, 16);
@@ -357,36 +403,159 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
           return;
         }
         
+        // Procedural eye blink state
+        let nextBlinkTime = Date.now() + 3000 + Math.random() * 2000;
+        let blinkStart = 0;
+        let doubleBlink = false;
+        let doubleBlinkStart = 0;
+        const BLINK_DURATION = 150; // ms
+
+        // Micro-saccade state: slow gaze drift
+        let gazeTargetX = 0;
+        let gazeTargetY = 0;
+        let gazeCurrX = 0;
+        let gazeCurrY = 0;
+        let nextGazeShift = Date.now() + 1500 + Math.random() * 2000;
+
         // Animation loop
-        const animate = () => {
+        const animate = (timestamp: number) => {
           if (!isMounted) return;
           
           animationRef.current = requestAnimationFrame(animate);
           
-          // Idle animation - subtle movement
+          // Head micro-motion: very subtle idle breathing sway only — no speech bobbing
           if (modelRef.current) {
-            modelRef.current.rotation.y = Math.sin(Date.now() * 0.0005) * 0.05;
+            const t = Date.now() * 0.001;
+            const breathRock = Math.sin(t * 1.8) * 0.003;
+            modelRef.current.rotation.y = Math.sin(t * 0.5) * 0.012;
+            modelRef.current.rotation.x = Math.sin(t * 0.35) * 0.005 + breathRock;
           }
 
-          // 🔴 TEMP jitter test: oscillate jawOpen so we can confirm the mesh
-          // can visually animate independent of LipSyncAnimator. REMOVE once confirmed.
-          if (meshRef.current?.morphTargetInfluences && meshRef.current.morphTargetDictionary) {
-            const jawIdx = (meshRef.current.morphTargetDictionary as Record<string, number>)['jawOpen'] ?? -1;
-            if (jawIdx >= 0) {
-              const v = Math.abs(Math.sin(Date.now() * 0.004)); // ~0.6Hz jaw chew
-              meshRef.current.morphTargetInfluences[jawIdx] = v;
-              // mirror to other meshes
-              for (const m of allMorphMeshesRef.current) {
-                if (m !== meshRef.current && m.morphTargetInfluences && m.morphTargetInfluences.length > jawIdx) {
-                  m.morphTargetInfluences[jawIdx] = v;
-                }
+          // Drive lip-sync morph targets — MUST be before renderer.render()
+          lipSyncAnimatorRef.current?.update(timestamp);
+
+          // Procedural eye blink (more frequent during speech: 2-3.5s vs 3-5s idle)
+          const nowMs = Date.now();
+          const isSpeakingNow = lipSyncAnimatorRef.current?.getIsPlaying() ?? false;
+          if (nowMs >= nextBlinkTime) {
+            blinkStart = nowMs;
+            // 15% chance of double-blink
+            doubleBlink = Math.random() < 0.15;
+            doubleBlinkStart = 0;
+            const minInterval = isSpeakingNow ? 2000 : 3000;
+            const maxExtra = isSpeakingNow ? 1500 : 2000;
+            nextBlinkTime = nowMs + minInterval + Math.random() * maxExtra;
+          }
+          // Trigger double-blink after first blink completes
+          if (doubleBlink && blinkStart > 0 && nowMs - blinkStart > BLINK_DURATION + 80 && doubleBlinkStart === 0) {
+            doubleBlinkStart = nowMs;
+          }
+
+          if (meshRef.current?.morphTargetInfluences && meshRef.current?.morphTargetDictionary) {
+            const dict = meshRef.current.morphTargetDictionary;
+            const blinkL = dict['eyeBlinkLeft'];
+            const blinkR = dict['eyeBlinkRight'];
+
+            // Primary blink
+            const blinkElapsed = nowMs - blinkStart;
+            let blinkVal = 0;
+            if (blinkStart > 0 && blinkElapsed < BLINK_DURATION) {
+              const halfDur = BLINK_DURATION / 2;
+              blinkVal = blinkElapsed < halfDur
+                ? blinkElapsed / halfDur
+                : 1 - (blinkElapsed - halfDur) / halfDur;
+            }
+            // Double-blink overlay
+            if (doubleBlinkStart > 0) {
+              const dblElapsed = nowMs - doubleBlinkStart;
+              if (dblElapsed < BLINK_DURATION) {
+                const halfDur = BLINK_DURATION / 2;
+                const dblVal = dblElapsed < halfDur
+                  ? dblElapsed / halfDur
+                  : 1 - (dblElapsed - halfDur) / halfDur;
+                blinkVal = Math.max(blinkVal, dblVal);
               }
+            }
+            if (blinkL !== undefined) meshRef.current.morphTargetInfluences[blinkL] = blinkVal;
+            if (blinkR !== undefined) meshRef.current.morphTargetInfluences[blinkR] = blinkVal;
+
+            // Micro-saccades: slow gaze drift for natural eye movement
+            if (nowMs >= nextGazeShift) {
+              gazeTargetX = (Math.random() - 0.5) * 0.12; // subtle horizontal
+              gazeTargetY = (Math.random() - 0.5) * 0.06; // subtle vertical
+              nextGazeShift = nowMs + 1200 + Math.random() * 2500;
+            }
+            // Smooth drift toward target
+            gazeCurrX += (gazeTargetX - gazeCurrX) * 0.03;
+            gazeCurrY += (gazeTargetY - gazeCurrY) * 0.03;
+
+            const lookInL = dict['eyeLookInLeft'];
+            const lookOutL = dict['eyeLookOutLeft'];
+            const lookInR = dict['eyeLookInRight'];
+            const lookOutR = dict['eyeLookOutRight'];
+            const lookUpL = dict['eyeLookUpLeft'];
+            const lookDownL = dict['eyeLookDownLeft'];
+            const lookUpR = dict['eyeLookUpRight'];
+            const lookDownR = dict['eyeLookDownRight'];
+
+            // Horizontal: positive = look right (InLeft + OutRight), negative = look left
+            if (gazeCurrX > 0) {
+              if (lookInL !== undefined) meshRef.current.morphTargetInfluences[lookInL] = gazeCurrX;
+              if (lookOutR !== undefined) meshRef.current.morphTargetInfluences[lookOutR] = gazeCurrX;
+              if (lookOutL !== undefined) meshRef.current.morphTargetInfluences[lookOutL] = 0;
+              if (lookInR !== undefined) meshRef.current.morphTargetInfluences[lookInR] = 0;
+            } else {
+              if (lookOutL !== undefined) meshRef.current.morphTargetInfluences[lookOutL] = -gazeCurrX;
+              if (lookInR !== undefined) meshRef.current.morphTargetInfluences[lookInR] = -gazeCurrX;
+              if (lookInL !== undefined) meshRef.current.morphTargetInfluences[lookInL] = 0;
+              if (lookOutR !== undefined) meshRef.current.morphTargetInfluences[lookOutR] = 0;
+            }
+            // Vertical: positive = look up
+            if (gazeCurrY > 0) {
+              if (lookUpL !== undefined) meshRef.current.morphTargetInfluences[lookUpL] = gazeCurrY;
+              if (lookUpR !== undefined) meshRef.current.morphTargetInfluences[lookUpR] = gazeCurrY;
+              if (lookDownL !== undefined) meshRef.current.morphTargetInfluences[lookDownL] = 0;
+              if (lookDownR !== undefined) meshRef.current.morphTargetInfluences[lookDownR] = 0;
+            } else {
+              if (lookDownL !== undefined) meshRef.current.morphTargetInfluences[lookDownL] = -gazeCurrY;
+              if (lookDownR !== undefined) meshRef.current.morphTargetInfluences[lookDownR] = -gazeCurrY;
+              if (lookUpL !== undefined) meshRef.current.morphTargetInfluences[lookUpL] = 0;
+              if (lookUpR !== undefined) meshRef.current.morphTargetInfluences[lookUpR] = 0;
+            }
+
+            // Subtle smile during speech (muscles naturally engage)
+            if (isSpeakingNow) {
+              const smileL = dict['mouthSmileLeft'];
+              const smileR = dict['mouthSmileRight'];
+              const subtleSmile = 0.04 + Math.sin(Date.now() * 0.001 * 0.7) * 0.02;
+              if (smileL !== undefined) {
+                meshRef.current.morphTargetInfluences[smileL] = Math.max(
+                  meshRef.current.morphTargetInfluences[smileL],
+                  subtleSmile
+                );
+              }
+              if (smileR !== undefined) {
+                meshRef.current.morphTargetInfluences[smileR] = Math.max(
+                  meshRef.current.morphTargetInfluences[smileR],
+                  subtleSmile
+                );
+              }
+            }
+
+            // Mirror blink/gaze to additional meshes
+            for (const extraMesh of allMorphMeshesRef.current) {
+              if (extraMesh === meshRef.current || !extraMesh.morphTargetInfluences || !extraMesh.morphTargetDictionary) continue;
+              const ed = extraMesh.morphTargetDictionary;
+              const eBL = ed['eyeBlinkLeft'];
+              const eBR = ed['eyeBlinkRight'];
+              if (eBL !== undefined) extraMesh.morphTargetInfluences[eBL] = blinkVal;
+              if (eBR !== undefined) extraMesh.morphTargetInfluences[eBR] = blinkVal;
             }
           }
           
           renderer.render(scene, camera);
         };
-        animate();
+        animate(performance.now());
         
         // Handle resize
         const handleResize = () => {
@@ -451,8 +620,7 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
         material.color.setHex(colors[emotion] || colors.neutral);
       }
     } else {
-      // For GLB models, you could animate scale or add particle effects
-      console.log(`Emotion changed to: ${emotion}`);
+      // GLB model — emotion changes could drive expressions
     }
   }, [emotion, isLoaded, usesFallback]);
 
@@ -554,16 +722,28 @@ export const Avatar = forwardRef<AvatarHandle, AvatarProps>((props, ref) => {
     setIsClient(true);
   }, []);
 
-  // Forward the ref to the actual AvatarCore
-  useImperativeHandle(ref, () => avatarRef.current || {
-    playLipSync: () => {},
-    pauseLipSync: () => {},
-    stopLipSync: () => {},
-    applyBlendshapes: () => {},
-    getLipSyncDuration: () => 0,
-    getLipSyncPlaying: () => false,
-    setAudioElement: () => {},
-  }, []);
+  // Forward the ref to the actual AvatarCore.
+  // Each method delegates through avatarRef AT CALL TIME so they work even
+  // though AvatarCore only mounts after the isClient=false→true transition.
+  useImperativeHandle(ref, () => ({
+    playLipSync: (blendshapeData: any[], startTime?: number) =>
+      avatarRef.current?.playLipSync(blendshapeData, startTime),
+    pauseLipSync: () => avatarRef.current?.pauseLipSync(),
+    stopLipSync: () => avatarRef.current?.stopLipSync(),
+    applyBlendshapes: (blendshapes: Record<string, number>) =>
+      avatarRef.current?.applyBlendshapes(blendshapes),
+    getLipSyncDuration: () => avatarRef.current?.getLipSyncDuration() ?? 0,
+    getLipSyncPlaying: () => avatarRef.current?.getLipSyncPlaying() ?? false,
+    setAudioElement: (el: HTMLAudioElement | null) =>
+      avatarRef.current?.setAudioElement(el),
+    setIsMockData: (isMock: boolean) =>
+      avatarRef.current?.setIsMockData(isMock),
+    setLipSyncOffset: (offsetMs: number) =>
+      avatarRef.current?.setLipSyncOffset(offsetMs),
+    getDebugStats: () =>
+      avatarRef.current?.getDebugStats() ?? { jawOpen: 0, speakingFactor: 0, elapsedMs: 0, frameIndex: 0, frameCount: 0, isPlaying: false, clockSource: 'perf' as const, offsetMs: 0, peakJaw: 0, peakFrame: 0, peakElapsed: 0, appliedTargets: 0 },
+    getMesh: () => avatarRef.current?.getMesh() ?? null,
+  }), []);
 
   if (!isClient) {
     return (

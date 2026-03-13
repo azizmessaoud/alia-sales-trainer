@@ -1,7 +1,7 @@
 /**
- * Lip-Sync Animator for 3D GLB Models
- * Maps NVIDIA Audio2Face blendshapes to Three.js morph targets
- * Syncs animation with audio playback
+ * Lip-Sync Animator for ReadyPlayerMe Avatars
+ * Optimized for RPM's 67-target morph structure
+ * Maps NVIDIA Audio2Face-3D ARKit → RPM viseme/morph targets
  */
 
 import * as THREE from 'three';
@@ -13,184 +13,250 @@ export interface Audio2FaceBlendshape {
 
 export interface LipSyncAnimatorConfig {
   mesh: THREE.Mesh;
-  /** Additional meshes to mirror blendshape influences to (e.g. Wolf3D_Teeth, EyeLeft) */
   additionalMeshes?: THREE.Mesh[];
   audioContext?: AudioContext;
-  smoothing?: number; // 0-1, higher = smoother but more delayed
+  smoothing?: number;
+}
+
+export interface LipSyncDebugStats {
+  jawOpen: number;
+  speakingFactor: number;
+  elapsedMs: number;
+  frameIndex: number;
+  frameCount: number;
+  isPlaying: boolean;
+  clockSource: 'audio' | 'perf';
+  offsetMs: number;
+  peakJaw: number;
+  peakFrame: number;
+  peakElapsed: number;
+  appliedTargets: number;
 }
 
 /**
- * ARKit to Three.js Blendshape Mapping
- * Maps standard ARKit face blendshape names to common morph target names
+ * NVIDIA Audio2Face-3D ARKit 52 → ReadyPlayerMe Complete Mapping
+ * Verified against Wolf3D_Head (67 morph targets)
  */
-const BLENDSHAPE_MAPPING: Record<string, string[]> = {
-  // Jaw
-  'jawOpen': ['jawOpen', 'jaw_open'],
-  'jawLeft': ['jawLeft', 'jaw_left'],
-  'jawRight': ['jawRight', 'jaw_right'],
-  'jawForward': ['jawForward', 'jaw_forward'],
+const AUDIO2FACE_TO_RPM: Record<string, string[]> = {
+  // === JAW (Index 49 - MOST CRITICAL) ===
+  'jawOpen': ['jawOpen'],
+  'jawForward': ['jawForward'],
+  'jawLeft': ['jawLeft'],
+  'jawRight': ['jawRight'],
 
-  // Mouth corners (also map to split Left/Right targets for RPM models)
-  'mouthSmile': ['mouthSmile', 'mouthSmileLeft', 'mouthSmileRight', 'mouth_smile_left', 'mouth_smile_right'],
-  'mouthFrown': ['mouthFrown', 'mouth_frown_left', 'mouth_frown_right'],
-  'mouthDimple': ['mouthDimple', 'mouth_dimple_left', 'mouth_dimple_right'],
+  // === MOUTH PRIMARY (Indices 50-66) ===
+  'mouthClose': ['mouthClose'],
+  'mouthFunnel': ['mouthFunnel'],
+  'mouthPucker': ['mouthPucker'],
+  'mouthLeft': ['mouthLeft'],
+  'mouthRight': ['mouthRight'],
 
-  // Mouth shape
-  'mouthFunnel': ['mouthFunnel', 'mouth_funnel'],
-  'mouthPucker': ['mouthPucker', 'mouth_pucker'],
-  'mouthPress': ['mouthPress', 'mouth_press'],
-  'mouthStretch': ['mouthStretch', 'mouth_stretch'],
+  // === MOUTH SMILE/FROWN (Split L/R) ===
+  'mouthSmileLeft': ['mouthSmileLeft'],
+  'mouthSmileRight': ['mouthSmileRight'],
+  'mouthFrownLeft': ['mouthFrownLeft'],
+  'mouthFrownRight': ['mouthFrownRight'],
 
-  // Mouth movement
-  'mouthLeft': ['mouthLeft', 'mouth_left'],
-  'mouthRight': ['mouthRight', 'mouth_right'],
-  'mouthClose': ['mouthClose', 'mouth_close'],
-  'mouthUpperUp': ['mouthUpperUp', 'mouth_upper_up'],
-  'mouthLowerDown': ['mouthLowerDown', 'mouth_lower_down'],
+  // === MOUTH DIMPLE/STRETCH ===
+  'mouthDimpleLeft': ['mouthDimpleLeft'],
+  'mouthDimpleRight': ['mouthDimpleRight'],
+  'mouthStretchLeft': ['mouthStretchLeft'],
+  'mouthStretchRight': ['mouthStretchRight'],
 
-  // Lips
-  'lipsPucker': ['lipsPucker', 'lips_pucker'],
-  'lipsPressTogetherLeft': ['lipsPressTogetherLeft', 'lips_press_together_left'],
-  'lipsPressTogetherRight': ['lipsPressTogetherRight', 'lips_press_together_right'],
-  'lipsUpperUp': ['lipsUpperUp', 'lips_upper_up'],
-  'lipsLowerDown': ['lipsLowerDown', 'lips_lower_down'],
+  // === MOUTH ROLL/SHRUG ===
+  'mouthRollLower': ['mouthRollLower'],
+  'mouthRollUpper': ['mouthRollUpper'],
+  'mouthShrugLower': ['mouthShrugLower'],
+  'mouthShrugUpper': ['mouthShrugUpper'],
 
-  // Cheeks
-  'cheekPuff': ['cheekPuff', 'cheek_puff_left', 'cheek_puff_right'],
-  'cheekSquint': ['cheekSquint', 'cheek_squint_left', 'cheek_squint_right'],
+  // === MOUTH PRESS ===
+  'mouthPressLeft': ['mouthPressLeft'],
+  'mouthPressRight': ['mouthPressRight'],
 
-  // Eyes
-  'eyeBlinkLeft': ['eyeBlinkLeft', 'eye_blink_left'],
-  'eyeBlinkRight': ['eyeBlinkRight', 'eye_blink_right'],
-  'eyeLookUpLeft': ['eyeLookUpLeft', 'eye_look_up_left'],
-  'eyeLookUpRight': ['eyeLookUpRight', 'eye_look_up_right'],
-  'eyeLookDownLeft': ['eyeLookDownLeft', 'eye_look_down_left'],
-  'eyeLookDownRight': ['eyeLookDownRight', 'eye_look_down_right'],
+  // === MOUTH LIP PARTING (Indices 34-35, 60-61 - KEY for speech) ===
+  'mouthLowerDownLeft': ['mouthLowerDownLeft'],
+  'mouthLowerDownRight': ['mouthLowerDownRight'],
+  'mouthUpperUpLeft': ['mouthUpperUpLeft'],
+  'mouthUpperUpRight': ['mouthUpperUpRight'],
 
-  // Eyebrows
-  'browDownLeft': ['browDownLeft', 'brow_down_left'],
-  'browDownRight': ['browDownRight', 'brow_down_right'],
-  'browOuterUpLeft': ['browOuterUpLeft', 'brow_outer_up_left'],
-  'browOuterUpRight': ['browOuterUpRight', 'brow_outer_up_right'],
-  'browInnerUp': ['browInnerUp', 'brow_inner_up'],
+  // === CHEEKS ===
+  'cheekPuff': ['cheekPuff'],
+  'cheekSquintLeft': ['cheekSquintLeft'],
+  'cheekSquintRight': ['cheekSquintRight'],
 
-  // Legacy combined names → split Left/Right
-  'browDown': ['browDownLeft', 'browDownRight', 'brow_down_left', 'brow_down_right'],
-  'mouthSmileLeft': ['mouthSmileLeft', 'mouth_smile_left'],
-  'mouthSmileRight': ['mouthSmileRight', 'mouth_smile_right'],
+  // === NOSE ===
+  'noseSneerLeft': ['noseSneerLeft'],
+  'noseSneerRight': ['noseSneerRight'],
 
-  // ReadyPlayerMe / Oculus viseme targets
-  'viseme_aa': ['viseme_aa'],
-  'viseme_E': ['viseme_E'],
-  'viseme_I': ['viseme_I'],
-  'viseme_O': ['viseme_O'],
-  'viseme_U': ['viseme_U'],
-  'viseme_CH': ['viseme_CH'],
-  'viseme_DD': ['viseme_DD'],
-  'viseme_FF': ['viseme_FF'],
-  'viseme_kk': ['viseme_kk'],
-  'viseme_nn': ['viseme_nn'],
-  'viseme_PP': ['viseme_PP'],
-  'viseme_RR': ['viseme_RR'],
-  'viseme_sil': ['viseme_sil'],
-  'viseme_SS': ['viseme_SS'],
-  'viseme_TH': ['viseme_TH'],
+  // === EYES BLINK (Indices 65-66) ===
+  'eyeBlinkLeft': ['eyeBlinkLeft'],
+  'eyeBlinkRight': ['eyeBlinkRight'],
+
+  // === EYES LOOK ===
+  'eyeLookDownLeft': ['eyeLookDownLeft'],
+  'eyeLookDownRight': ['eyeLookDownRight'],
+  'eyeLookInLeft': ['eyeLookInLeft'],
+  'eyeLookInRight': ['eyeLookInRight'],
+  'eyeLookOutLeft': ['eyeLookOutLeft'],
+  'eyeLookOutRight': ['eyeLookOutRight'],
+  'eyeLookUpLeft': ['eyeLookUpLeft'],
+  'eyeLookUpRight': ['eyeLookUpRight'],
+
+  // === EYES SQUINT/WIDE ===
+  'eyeSquintLeft': ['eyeSquintLeft'],
+  'eyeSquintRight': ['eyeSquintRight'],
+  'eyeWideLeft': ['eyeWideLeft'],
+  'eyeWideRight': ['eyeWideRight'],
+
+  // === BROWS (Indices 15-19 - Emotion) ===
+  'browDownLeft': ['browDownLeft'],
+  'browDownRight': ['browDownRight'],
+  'browInnerUp': ['browInnerUp'],
+  'browOuterUpLeft': ['browOuterUpLeft'],
+  'browOuterUpRight': ['browOuterUpRight'],
+
+  // === TONGUE ===
+  'tongueOut': ['tongueOut'],
+
+  // === READYPLAYERME VISEMES (Indices 0-14) ===
+  'viseme_sil': ['visemesil'],
+  'viseme_PP': ['visemePP'],
+  'viseme_FF': ['visemeFF'],
+  'viseme_TH': ['visemeTH'],
+  'viseme_DD': ['visemeDD'],
+  'viseme_kk': ['visemekk'],
+  'viseme_CH': ['visemeCH'],
+  'viseme_SS': ['visemeSS'],
+  'viseme_nn': ['visemenn'],
+  'viseme_RR': ['visemeRR'],
+  'viseme_aa': ['visemeaa'],
+  'viseme_E': ['visemeE'],
+  'viseme_I': ['visemeI'],
+  'viseme_O': ['visemeO'],
+  'viseme_U': ['visemeU'],
 };
 
 /**
- * Reverse map: GLB morph-target name → ARKit blendshape category
- * Lets us find a viseme target even when the incoming data uses ARKit names.
- * e.g. if the GLB has 'viseme_aa' but data sends 'jawOpen', we can still
- * drive viseme_aa from jawOpen intensity.
+ * ReadyPlayerMe-specific fallback: Drive visemes from ARKit shapes
+ * Used when Audio2Face sends ARKit names but RPM has viseme targets
  */
-const VISEME_FROM_ARKIT: Record<string, { target: string; scale: number }[]> = {
-  'jawOpen':      [{ target: 'viseme_aa', scale: 0.7 }, { target: 'viseme_O', scale: 0.3 }],
-  'mouthFunnel':  [{ target: 'viseme_O', scale: 0.8 }, { target: 'viseme_U', scale: 0.4 }],
-  'mouthPucker':  [{ target: 'viseme_U', scale: 0.7 }],
-  'mouthSmileLeft': [{ target: 'viseme_E', scale: 0.4 }],
-  'mouthSmileRight': [{ target: 'viseme_E', scale: 0.4 }],
-  'mouthFrown':   [{ target: 'viseme_FF', scale: 0.3 }],
-  'mouthPress':   [{ target: 'viseme_PP', scale: 0.6 }],
+const ARKIT_TO_RPM_VISEME: Record<string, Array<{ target: string; weight: number }>> = {
+  'jawOpen': [
+    { target: 'visemeaa', weight: 1.0 },
+    { target: 'visemeO', weight: 0.5 },
+  ],
+  'mouthFunnel': [
+    { target: 'visemeO', weight: 1.0 },
+    { target: 'visemeU', weight: 0.6 },
+  ],
+  'mouthPucker': [
+    { target: 'visemeU', weight: 1.0 },
+  ],
+  'mouthSmileLeft': [
+    { target: 'visemeE', weight: 0.7 },
+    { target: 'visemeI', weight: 0.4 },
+  ],
+  'mouthSmileRight': [
+    { target: 'visemeE', weight: 0.7 },
+    { target: 'visemeI', weight: 0.4 },
+  ],
+  'mouthPressLeft': [
+    { target: 'visemePP', weight: 0.8 },
+  ],
+  'mouthPressRight': [
+    { target: 'visemePP', weight: 0.8 },
+  ],
+  'mouthFrownLeft': [
+    { target: 'visemeFF', weight: 0.6 },
+  ],
+  'mouthFrownRight': [
+    { target: 'visemeFF', weight: 0.6 },
+  ],
+  'mouthLowerDownLeft': [
+    { target: 'visemeDD', weight: 0.7 },
+  ],
+  'mouthLowerDownRight': [
+    { target: 'visemeDD', weight: 0.7 },
+  ],
+  'cheekSquintLeft': [
+    { target: 'visemeSS', weight: 0.5 },
+  ],
+  'cheekSquintRight': [
+    { target: 'visemeSS', weight: 0.5 },
+  ],
 };
 
 export class LipSyncAnimator {
   private mesh: THREE.Mesh;
   private morphTargetDictionary: Record<string, number>;
   private currentFrameIndex: number = 0;
-  private animationFrameId: number | null = null;
   private startTime: number = 0;
   private audioStartTime: number = 0;
   private lastTimestamp: number = performance.now();
-  private lastBlendUpdate: number = 0;
   private blendshapeData: Audio2FaceBlendshape[] = [];
   private smoothingFactor: number;
   private lastBlendshapeValues: Record<string, number> = {};
   private isPlaying: boolean = false;
-  private hasLoggedFirstFrame: boolean = false;
   speakingFactor: number = 0;
   private speakingTarget: number = 0;
-  private speakingSpeed: number = 15; // higher = faster (~60-80ms ramp)
-  private blendFps: number = 30;
+  private speakingSpeed: number = 15;
   private neutralFadeDuration: number = 0.25;
   private neutralElapsed: number = 0;
   private neutralActive: boolean = false;
   private neutralSnapshot: number[] | null = null;
-
-  /** Additional meshes that receive mirrored morph influences each frame */
   private additionalMeshes: THREE.Mesh[] = [];
 
-  /**
-   * Audio element used as the master clock for lip-sync timing.
-   * When set, animation frames are driven by audio.currentTime
-   * instead of performance.now(), ensuring perfect audio-visual sync.
-   * Inspired by TalkingHead (met4citizen) architecture.
-   */
+  lipSyncOffsetMs: number = 0;
+  private _lastElapsedMs: number = 0;
+  private _peakJaw: number = 0;
+  private _peakFrame: number = 0;
+  private _peakElapsed: number = 0;
+  private _appliedTargetsCount: number = 0;
+
   private audioElement: HTMLAudioElement | null = null;
+  private isMockData: boolean = false;
+  private _applyBSCallCount: number = 0;
+  private _firstUpdatePending: boolean = false;
 
   constructor(config: LipSyncAnimatorConfig) {
     this.mesh = config.mesh;
     this.additionalMeshes = config.additionalMeshes ?? [];
-    this.smoothingFactor = config.smoothing ?? 0.3;
+    this.smoothingFactor = config.smoothing ?? 0.15;
 
-    // Build mapping of blendshape indices
     this.morphTargetDictionary = {};
     if (config.mesh.morphTargetDictionary) {
       this.morphTargetDictionary = config.mesh.morphTargetDictionary;
     }
 
-    console.log('🎬 LipSyncAnimator initialized');
-    const availableTargets = Object.keys(this.morphTargetDictionary);
-    
-    if (availableTargets.length > 0) {
-      console.log(`   Available morph targets: ${availableTargets.length}`);
-      console.log(`   Targets: ${availableTargets.slice(0, 15).join(', ')}${availableTargets.length > 15 ? '...' : ''}`);
-    } else {
-      console.warn('⚠️  No morph targets found - animation will have no visual effect');
-    }
+    const hasJawOpen = 'jawOpen' in this.morphTargetDictionary;
+    const hasVisemes = 'visemeaa' in this.morphTargetDictionary;
+    console.log(`🎬 LipSyncAnimator (RPM): ${Object.keys(this.morphTargetDictionary).length} targets, jawOpen=${hasJawOpen}, visemes=${hasVisemes}`);
   }
 
-  /**
-   * Set the <audio> element to use as the master clock.
-   * When provided, animation timing is driven by audio.currentTime
-   * ensuring lip-sync stays perfectly aligned with audible speech.
-   */
   setAudioElement(el: HTMLAudioElement | null): void {
     this.audioElement = el;
   }
 
-  /**
-   * Load blendshape animation data from Audio2Face
-   */
-  setBlendshapeData(data: Audio2FaceBlendshape[]): void {
-    this.blendshapeData = data;
-    this.currentFrameIndex = 0;
-    console.log(`📊 Loaded ${data.length} blendshape frames`);
+  setIsMockData(flag: boolean): void {
+    this.isMockData = flag;
   }
 
-  /**
-   * Play lip-sync animation synced to audio.
-   * Call update(timestamp) from the Three.js render loop each frame.
-   */
+  setLipSyncOffset(offsetMs: number): void {
+    this.lipSyncOffsetMs = offsetMs;
+  }
+
+  setBlendshapeData(data: Audio2FaceBlendshape[]): void {
+    if (data.length > 0 && data[0].timestamp !== 0) {
+      const offset = data[0].timestamp;
+      this.blendshapeData = data.map(f => ({ ...f, timestamp: f.timestamp - offset }));
+    } else {
+      // Defensive copy — prevent external mutations from affecting the animator
+      this.blendshapeData = data.map(f => ({ ...f }));
+    }
+    this.currentFrameIndex = 0;
+    console.log(`📊 Loaded ${this.blendshapeData.length} frames for RPM avatar`);
+  }
+
   play(audioCurrentTime: number = 0): void {
     if (this.isPlaying) this.stop();
 
@@ -198,75 +264,82 @@ export class LipSyncAnimator {
     const now = performance.now();
     this.startTime = now;
     this.lastTimestamp = now;
-    this.lastBlendUpdate = now;
     this.audioStartTime = audioCurrentTime * 1000;
     this.currentFrameIndex = 0;
-    this.hasLoggedFirstFrame = false;
+    this._applyBSCallCount = 0;
+    this._firstUpdatePending = true;
+    this._peakJaw = 0;
+    this._peakFrame = 0;
+    this._peakElapsed = 0;
+    this._appliedTargetsCount = 0;
+    this.neutralActive = false;
+    this.neutralSnapshot = null;
 
-    console.log('▶️  Lip-sync animation started');
+    console.log(`▶️  RPM lip-sync: ${this.blendshapeData.length} frames, clock=${this.audioElement ? 'audio' : 'perf'}`);
   }
 
-  /**
-   * Control mouth ease-in/out
-   */
   setIsSpeaking(isSpeaking: boolean): void {
     this.speakingTarget = isSpeaking ? 1 : 0;
-    if (!isSpeaking) {
+    if (!isSpeaking && !this.isPlaying) {
       this.startNeutralFade();
     }
   }
 
-  /**
-   * Pause animation (keeps current frame visible)
-   */
   pause(): void {
     this.isPlaying = false;
-    console.log('⏸️  Lip-sync animation paused');
+    console.log('⏸️  Paused');
   }
 
-  /**
-   * Stop animation and reset to neutral
-   */
   stop(): void {
     this.isPlaying = false;
     this.currentFrameIndex = 0;
+    this._lastElapsedMs = 0;
     this.resetBlendshapes();
-    console.log('⏹️  Lip-sync animation stopped');
+    console.log('⏹️  Stopped');
   }
 
-  /**
-   * Drive one frame of lip-sync animation.
-   * MUST be called from the Three.js render loop BEFORE renderer.render()
-   * so that morph target writes are committed in the same frame as the draw call.
-   */
   update(timestamp: number): void {
     if (!this.isPlaying || this.blendshapeData.length === 0) return;
 
     const now = timestamp;
+
+    if (this._firstUpdatePending) {
+      this._firstUpdatePending = false;
+      this.startTime = now;
+      this.lastTimestamp = now;
+    }
+
     const deltaSeconds = (now - this.lastTimestamp) / 1000;
     this.lastTimestamp = now;
 
     this.updateSpeakingFactor(deltaSeconds);
     this.updateNeutralFade(deltaSeconds);
 
-    // ── Master clock ──
+    // Master clock
     let elapsedTime: number;
-    if (this.audioElement) {
-      const audioMs = this.audioElement.currentTime * 1000;
-      if (this.audioElement.paused && audioMs === 0) return; // not started yet
-      elapsedTime = audioMs;
+    if (this.audioElement && !this.audioElement.paused && this.audioElement.duration > 0) {
+      elapsedTime = this.audioElement.currentTime * 1000;
     } else {
-      // performance.now() fallback (browser TTS / mock)
       elapsedTime = now - this.startTime + this.audioStartTime;
     }
+    elapsedTime += this.lipSyncOffsetMs;
+    this._lastElapsedMs = elapsedTime;
 
-    // Advance frame pointer
+    if (elapsedTime > this._peakElapsed) this._peakElapsed = elapsedTime;
+
+    // Frame advance
+    const MAX_FRAME_SKIP = 10;
+    let skipped = 0;
     while (
       this.currentFrameIndex < this.blendshapeData.length - 1 &&
-      this.blendshapeData[this.currentFrameIndex + 1].timestamp <= elapsedTime
+      this.blendshapeData[this.currentFrameIndex + 1].timestamp <= elapsedTime &&
+      skipped < MAX_FRAME_SKIP
     ) {
       this.currentFrameIndex++;
+      skipped++;
     }
+
+    if (this.currentFrameIndex > this._peakFrame) this._peakFrame = this.currentFrameIndex;
 
     const currentFrame = this.blendshapeData[this.currentFrameIndex];
     const nextFrame =
@@ -279,18 +352,25 @@ export class LipSyncAnimator {
       t = (elapsedTime - currentFrame.timestamp) / (nextFrame.timestamp - currentFrame.timestamp);
       t = Math.max(0, Math.min(1, t));
     }
+    t = t * t * (3 - 2 * t); // Smoothstep
 
     this.applyBlendshapes(currentFrame.blendshapes, nextFrame.blendshapes, t);
 
     if (this.currentFrameIndex >= this.blendshapeData.length - 1) {
-      this.isPlaying = false;
-      console.log('✅ Lip-sync animation completed');
+      if (this.isMockData && this.speakingTarget > 0) {
+        // Voice still active — loop mock data so mouth keeps moving
+        this.currentFrameIndex = 0;
+        this.startTime = now;
+        this.audioStartTime = 0;
+        this._lastElapsedMs = 0;
+      } else {
+        this.isPlaying = false;
+        this.startNeutralFade();
+        console.log(`✅ Complete: ${this._appliedTargetsCount} targets, peak jaw=${this._peakJaw.toFixed(3)}`);
+      }
     }
   }
 
-  /**
-   * Apply blendshapes to morph targets with smooth interpolation
-   */
   private applyBlendshapes(
     frame1: Record<string, number>,
     frame2: Record<string, number>,
@@ -298,93 +378,120 @@ export class LipSyncAnimator {
   ): void {
     if (!this.mesh.morphTargetInfluences) return;
 
-    // Get all unique blendshape names
-    const allBlendshapes = new Set([
-      ...Object.keys(frame1),
-      ...Object.keys(frame2),
-    ]);
+    const allBlendshapes = new Set([...Object.keys(frame1), ...Object.keys(frame2)]);
+    let appliedCount = 0;
+    const skipped: string[] = [];
+
+    // Procedural micro-expressions during speech for liveliness
+    const now = performance.now();
+    const microBrow = Math.sin(now * 0.0043) * 0.012 * this.speakingFactor;
+    const microCheek = (Math.sin(now * 0.0031) * 0.5 + 0.5) * 0.05 * this.speakingFactor;
 
     for (const blendshapeName of allBlendshapes) {
       const value1 = frame1[blendshapeName] ?? 0;
       const value2 = frame2[blendshapeName] ?? 0;
+      let interpolated = value1 + (value2 - value1) * t;
 
-      // Linear interpolation between frames
-      const interpolatedValue = value1 + (value2 - value1) * t;
+      // RPM-specific amplification: 1.2x for jaw, 1.3x for mouth
+      const lower = blendshapeName.toLowerCase();
+      if (lower === 'jawopen') {
+        interpolated = Math.min(interpolated * 1.2, 0.7);
+      } else if (lower.includes('mouth') || lower.includes('lip')) {
+        interpolated = Math.min(interpolated * 1.3, 1.0);
+      }
 
-      // Ease mouth shapes when speaking toggles
-      const isMouth =
-        blendshapeName.startsWith('jaw') ||
-        blendshapeName.startsWith('mouth') ||
-        blendshapeName.startsWith('lip');
-      const baseValue = interpolatedValue * (isMouth ? this.speakingFactor : 1);
+      // Add procedural micro-expressions to secondary channels
+      if (lower === 'browinnerup') {
+        interpolated += microBrow;
+      } else if (lower === 'cheeksquintleft' || lower === 'cheeksquintright') {
+        interpolated += microCheek;
+      }
 
-      // --- Primary path: BLENDSHAPE_MAPPING or exact match ---
-      const targetIndices = this.findMorphTargetIndices(blendshapeName);
+      // Asymmetric smoothing: fast onset (0.45), slower offset (0.82)
+      const baseSmooth = this.isMockData ? 0.6 : 0.75;
+      const prevVal = this.lastBlendshapeValues[blendshapeName] ?? 0;
+      const smoothFactor = interpolated > prevVal
+        ? Math.min(baseSmooth + 0.15, 0.85)   // fast attack
+        : Math.max(baseSmooth - 0.10, 0.50);  // slower release
 
-      if (targetIndices.length > 0) {
-        for (const index of targetIndices) {
-          if (index >= 0 && index < this.mesh.morphTargetInfluences.length) {
-            const prev = this.mesh.morphTargetInfluences[index] ?? 0;
-            const smoothed = THREE.MathUtils.lerp(prev, baseValue, this.smoothingFactor);
-            this.mesh.morphTargetInfluences[index] = THREE.MathUtils.clamp(smoothed, 0, 1);
+      // PRIMARY: Direct RPM mapping
+      const rpmTargets = AUDIO2FACE_TO_RPM[blendshapeName];
+      if (rpmTargets) {
+        for (const targetName of rpmTargets) {
+          const idx = this.morphTargetDictionary[targetName];
+          if (idx !== undefined && idx >= 0 && idx < this.mesh.morphTargetInfluences.length) {
+            const prev = this.mesh.morphTargetInfluences[idx] ?? 0;
+            const smoothed = THREE.MathUtils.lerp(prev, interpolated, smoothFactor);
+            this.mesh.morphTargetInfluences[idx] = THREE.MathUtils.clamp(smoothed, 0, 1);
+            appliedCount++;
           }
         }
       }
-      // --- Fallback: VISEME_FROM_ARKIT with per-target scaling ---
-      else if (blendshapeName in VISEME_FROM_ARKIT) {
-        for (const { target, scale } of VISEME_FROM_ARKIT[blendshapeName]) {
-          if (target in this.morphTargetDictionary) {
-            const index = this.morphTargetDictionary[target];
-            if (index >= 0 && index < this.mesh.morphTargetInfluences.length) {
-              const scaledValue = baseValue * scale;
-              const prev = this.mesh.morphTargetInfluences[index] ?? 0;
-              // Use max() so multiple ARKit sources can contribute to same viseme
-              const combined = Math.max(prev, scaledValue);
-              const smoothed = THREE.MathUtils.lerp(
-                this.mesh.morphTargetInfluences[index],
-                combined,
-                this.smoothingFactor
-              );
-              this.mesh.morphTargetInfluences[index] = THREE.MathUtils.clamp(smoothed, 0, 1);
-            }
+      // FALLBACK: ARKit → RPM viseme mapping
+      else if (blendshapeName in ARKIT_TO_RPM_VISEME) {
+        for (const { target, weight } of ARKIT_TO_RPM_VISEME[blendshapeName]) {
+          const idx = this.morphTargetDictionary[target];
+          if (idx !== undefined && idx >= 0 && idx < this.mesh.morphTargetInfluences.length) {
+            const weighted = interpolated * weight;
+            const prev = this.mesh.morphTargetInfluences[idx] ?? 0;
+            const combined = Math.max(prev, weighted);
+            const smoothed = THREE.MathUtils.lerp(prev, combined, smoothFactor);
+            this.mesh.morphTargetInfluences[idx] = THREE.MathUtils.clamp(smoothed, 0, 1);
+            appliedCount++;
           }
         }
       }
+      // EXACT MATCH: RPM target name = blendshape name
+      else {
+        const idx = this.morphTargetDictionary[blendshapeName];
+        if (idx !== undefined && idx >= 0 && idx < this.mesh.morphTargetInfluences.length) {
+          const prev = this.mesh.morphTargetInfluences[idx] ?? 0;
+          const smoothed = THREE.MathUtils.lerp(prev, interpolated, smoothFactor);
+          this.mesh.morphTargetInfluences[idx] = THREE.MathUtils.clamp(smoothed, 0, 1);
+          appliedCount++;
+        } else {
+          skipped.push(blendshapeName);
+        }
+      }
 
-      this.lastBlendshapeValues[blendshapeName] = baseValue;
+      this.lastBlendshapeValues[blendshapeName] = interpolated;
+      if (blendshapeName === 'jawOpen' && interpolated > this._peakJaw) {
+        this._peakJaw = interpolated;
+      }
     }
 
-    // Mirror all influences to additional meshes (EyeLeft/EyeRight handled too)
+    this._appliedTargetsCount = appliedCount;
+
+    if (skipped.length > 0 && this._applyBSCallCount === 0) {
+      console.warn(`⚠️  ${skipped.length} unmapped:`, skipped.slice(0, 8));
+    }
+    this._applyBSCallCount++;
+
     this.mirrorToAdditionalMeshes();
   }
 
-  /** Copy primary mesh morph influences to all additional meshes */
   private mirrorToAdditionalMeshes(): void {
     if (!this.mesh.morphTargetInfluences || this.additionalMeshes.length === 0) return;
     const src = this.mesh.morphTargetInfluences;
     for (const m of this.additionalMeshes) {
-      if (m.morphTargetInfluences && m.morphTargetInfluences.length === src.length) {
-        for (let i = 0; i < src.length; i++) {
+      if (m.morphTargetInfluences) {
+        const len = Math.min(src.length, m.morphTargetInfluences.length);
+        for (let i = 0; i < len; i++) {
           m.morphTargetInfluences[i] = src[i];
         }
       }
     }
   }
 
-  /**
-   * Smoothly ramp mouth activity
-   */
   private updateSpeakingFactor(deltaSeconds: number): void {
+    const speed = this.isMockData ? 30 : this.speakingSpeed;
     this.speakingFactor = THREE.MathUtils.lerp(
       this.speakingFactor,
       this.speakingTarget,
-      THREE.MathUtils.clamp(deltaSeconds * this.speakingSpeed, 0, 1)
+      THREE.MathUtils.clamp(deltaSeconds * speed, 0, 1)
     );
   }
 
-  /**
-   * Fade back to neutral when speech stops
-   */
   private startNeutralFade(): void {
     if (!this.mesh.morphTargetInfluences) return;
     this.neutralSnapshot = [...this.mesh.morphTargetInfluences];
@@ -409,33 +516,6 @@ export class LipSyncAnimator {
     }
   }
 
-  /**
-   * Find morph target indices for a blendshape name.
-   * Uses BLENDSHAPE_MAPPING first, then exact-match fallback.
-   * VISEME_FROM_ARKIT fallback is handled separately in applyBlendshapes
-   * so that per-target scale factors can be applied.
-   */
-  private findMorphTargetIndices(blendshapeName: string): number[] {
-    const possibleNames = BLENDSHAPE_MAPPING[blendshapeName] || [blendshapeName];
-    const indices: number[] = [];
-
-    for (const name of possibleNames) {
-      if (name in this.morphTargetDictionary) {
-        indices.push(this.morphTargetDictionary[name]);
-      }
-    }
-
-    // Fallback: try exact match if no mapped names found
-    if (indices.length === 0 && blendshapeName in this.morphTargetDictionary) {
-      indices.push(this.morphTargetDictionary[blendshapeName]);
-    }
-
-    return indices;
-  }
-
-  /**
-   * Reset all blendshapes to neutral
-   */
   private resetBlendshapes(): void {
     if (!this.mesh.morphTargetInfluences) return;
 
@@ -446,38 +526,45 @@ export class LipSyncAnimator {
     this.lastBlendshapeValues = {};
   }
 
-  /**
-   * Get animation duration in seconds
-   */
   getDuration(): number {
     if (this.blendshapeData.length === 0) return 0;
     const lastFrame = this.blendshapeData[this.blendshapeData.length - 1];
     return lastFrame.timestamp / 1000;
   }
 
-  /**
-   * Get current playback time in seconds
-   */
   getCurrentTime(): number {
     if (!this.isPlaying) return 0;
-    return (Date.now() - this.startTime + this.audioStartTime) / 1000;
+    // Use performance.now() — same clock as startTime set in play() and update()'s RAF timestamp
+    return (performance.now() - this.startTime + this.audioStartTime) / 1000;
   }
 
-  /**
-   * Check if animation is currently playing
-   */
   getIsPlaying(): boolean {
     return this.isPlaying;
   }
 
-  /**
-   * Debug: Log available blendshapes
-   */
   debugLogBlendshapes(): void {
-    console.log('📋 Available Morph Targets:');
-    for (const [name, index] of Object.entries(this.morphTargetDictionary)) {
-      console.log(`   [${index}] ${name}`);
+    console.log('📋 RPM Morph Targets:');
+    const sorted = Object.entries(this.morphTargetDictionary).sort((a, b) => a[1] - b[1]);
+    for (const [name, idx] of sorted) {
+      console.log(`   [${idx}] ${name}`);
     }
+  }
+
+  getDebugStats(): LipSyncDebugStats {
+    return {
+      jawOpen: this.lastBlendshapeValues['jawOpen'] ?? 0,
+      speakingFactor: this.speakingFactor,
+      elapsedMs: this._lastElapsedMs,
+      frameIndex: this.currentFrameIndex,
+      frameCount: this.blendshapeData.length,
+      isPlaying: this.isPlaying,
+      clockSource: (this.audioElement && !this.audioElement.paused) ? 'audio' : 'perf',
+      offsetMs: this.lipSyncOffsetMs,
+      peakJaw: this._peakJaw,
+      peakFrame: this._peakFrame,
+      peakElapsed: this._peakElapsed,
+      appliedTargets: this._appliedTargetsCount,
+    };
   }
 }
 

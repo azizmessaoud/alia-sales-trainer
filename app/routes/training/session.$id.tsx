@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams } from '@remix-run/react';
 import { MultimodalHUD } from '~/components/MultimodalHUD';
 import { getMultimodalProcessor, type MultimodalMetrics } from '~/lib/multimodal-processor.client';
+import { CompetencyLevelDisplay, LevelBadge, ProgressBar } from '~/components/CompetencyLevelDisplay';
 
 export default function TrainingSession() {
   const { id: sessionId } = useParams();
@@ -19,13 +20,32 @@ export default function TrainingSession() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [intervention, setIntervention] = useState<any>(null);
+  const [competencyProgress, setCompetencyProgress] = useState({ current: 1, target: 4 });
+
+  // Test rep — replace with real auth/session data when auth is wired up
+  const repId = '00000000-0000-0000-0000-000000000002';
+
+  // Fetch competency progression on mount
+  useEffect(() => {
+    fetch(`/api/competency-level?rep_id=${encodeURIComponent(repId)}&type=progression`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.progress) {
+          setCompetencyProgress({
+            current: data.progress.currentLevelNumber ?? 1,
+            target: 4,
+          });
+        }
+      })
+      .catch(() => { /* silently keep default */ });
+  }, [repId]);
 
   // =====================================================
   // Initialize Multimodal System
   // =====================================================
 
   useEffect(() => {
-    const repId = '00000000-0000-0000-0000-000000000002'; // Test rep
+    const repId = '00000000-0000-0000-0000-000000000002'; // same as component-level repId
 
     async function initialize() {
       try {
@@ -180,112 +200,84 @@ export default function TrainingSession() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white relative">
-      {/* Video Feed (hidden, used for processing) */}
-      <video
-        ref={videoRef}
-        className="hidden"
-        autoPlay
-        playsInline
-        muted
-      />
-
-      {/* Main Training Area */}
-      <div className="container mx-auto px-4 py-8">
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold mb-2">ALIA Training Session</h1>
-          <p className="text-gray-400">Session ID: {sessionId}</p>
-        </div>
-
-        {/* Avatar Area (Placeholder) */}
-        <div className="max-w-4xl mx-auto mb-8">
-          <div className="aspect-video bg-gray-800 rounded-xl border-2 border-gray-700 flex items-center justify-center">
-            {!isInitialized ? (
-              <div className="text-center">
-                <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-                <p className="text-xl">Initializing multimodal sensors...</p>
-                <p className="text-sm text-gray-400 mt-2">Requesting camera and microphone access</p>
-              </div>
-            ) : (
-              <div className="text-center">
-                <div className="text-6xl mb-4">🤖</div>
-                <p className="text-2xl font-semibold">ALIA Avatar</p>
-                <p className="text-gray-400 mt-2">Ready to train!</p>
-                <div className="mt-6 flex gap-4 justify-center">
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                    <span className="text-sm">Camera Active</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                    <span className="text-sm">Microphone Active</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                    <span className="text-sm">Pose Detection Active</span>
-                  </div>
-                </div>
-              </div>
-            )}
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <header className="bg-white shadow-sm border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16">
+            <h1 className="text-xl font-semibold text-gray-900">ALIA Training Session</h1>
+            <div className="flex items-center space-x-4">
+              <button
+                onClick={() => wsRef.current?.close()}
+                className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700"
+              >
+                Stop Session
+              </button>
+            </div>
           </div>
         </div>
+      </header>
 
-        {/* Chat Interface (Placeholder) */}
-        <div className="max-w-2xl mx-auto">
-          <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
-            <h3 className="text-xl font-semibold mb-4">Chat with ALIA</h3>
-            <div className="bg-gray-900 rounded-lg p-4 h-64 overflow-y-auto mb-4">
-              <p className="text-gray-400 text-center">No messages yet. Say hello to start training!</p>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Video and Intervention */}
+          <div className="lg:col-span-2">
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="aspect-video bg-gray-900 rounded-lg overflow-hidden relative">
+                <video
+                  ref={videoRef}
+                  className="w-full h-full object-cover"
+                  autoPlay
+                  muted
+                />
+                {intervention && (
+                  <div className="absolute top-4 right-4 bg-red-500 text-white px-3 py-1 rounded-md text-sm">
+                    Intervention: {intervention.type}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Type your message..."
-                className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 focus:outline-none focus:border-blue-500"
-                disabled={!isInitialized}
-              />
-              <button
-                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold disabled:opacity-50"
-                disabled={!isInitialized}
-              >
-                Send
-              </button>
+          </div>
+
+          {/* Metrics Panel */}
+          <div className="space-y-6">
+            {/* Current Metrics */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Current Metrics</h2>
+              <div className="space-y-3">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Posture Score</span>
+                  <span className="font-medium">{currentMetrics?.posture_score || '-'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Words Per Minute</span>
+                  <span className="font-medium">{currentMetrics?.speaking_pace || '-'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Engagement Score</span>
+                  <span className="font-medium">{currentMetrics?.engagement_score || '-'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-900">Stress Level</span>
+                  <span className="font-medium">{currentMetrics?.voice_stress_level || '-'}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Level Display */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Competency Level</h2>
+              <CompetencyLevelDisplay repId="00000000-0000-0000-0000-000000000002" />
+            </div>
+
+            {/* Progression */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Progression</h2>
+              <ProgressBar current={competencyProgress.current} target={competencyProgress.target} label="Level Progress" />
             </div>
           </div>
         </div>
       </div>
-
-      {/* Multimodal HUD Overlay */}
-      {isInitialized && <MultimodalHUD metrics={currentMetrics} showDetailed={true} />}
-
-      {/* Intervention Modal */}
-      {intervention && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className={`max-w-md rounded-xl p-6 shadow-2xl ${
-            intervention.severity === 'warning'
-              ? 'bg-yellow-500/90 border-2 border-yellow-400'
-              : 'bg-blue-500/90 border-2 border-blue-400'
-          }`}>
-            <div className="text-center">
-              <div className="text-4xl mb-4">
-                {intervention.severity === 'warning' ? '⚠️' : 'ℹ️'}
-              </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-2">
-                {intervention.type.replace(/_/g, ' ').toUpperCase()}
-              </h3>
-              <p className="text-xl text-gray-900 font-semibold">
-                {intervention.message}
-              </p>
-              <button
-                onClick={() => setIntervention(null)}
-                className="mt-6 px-6 py-2 bg-gray-900 text-white rounded-lg font-semibold hover:bg-gray-800"
-              >
-                Got it!
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -174,7 +174,7 @@ export async function transcribeAudio(audioBuffer: Buffer): Promise<string> {
 
 export async function synthesizeSpeech(
   text: string,
-  voice: string = 'default'
+  voice: string = process.env.TTS_VOICE || 'female'
 ): Promise<Buffer> {
   try {
     const response = await fetch(`${NVIDIA_BASE_URL}/audio/speech`, {
