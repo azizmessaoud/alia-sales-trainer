@@ -88,6 +88,7 @@ if (NVIDIA_API_KEY) {
 // ─────────────────────────────────────────────────
 const sessions = new Map();
 const clients = new Map(); // ws → { session_id, abortController }
+const cvMetrics = new Map();
 
 function logPipelineTiming({ sessionId, stage, durationMs, error = null, meta = {} }) {
   const payload = {
@@ -149,6 +150,8 @@ async function handleMessage(ws, msg) {
       return handleEndSession(ws, msg.payload || {});
     case 'chat':
       return handleChat(ws, msg.payload || {});
+    case 'cv_metrics':
+      return handleCVMetrics(ws, msg.payload || {});
     case 'interrupt':
       return handleInterrupt(ws);
     case 'debug_lipsync':
@@ -191,6 +194,7 @@ function handleEndSession(ws, { session_id }) {
 
   const duration = Date.now() - session.started_at;
   sessions.delete(session_id);
+  cvMetrics.delete(session_id);
   const clientState = clients.get(ws);
   if (clientState) delete clientState.session_id;
 
@@ -200,6 +204,25 @@ function handleEndSession(ws, { session_id }) {
     duration,
     message_count: session.messages.length,
   });
+}
+
+function handleCVMetrics(ws, payload = {}) {
+  const state = clients.get(ws);
+  const session_id = payload.session_id || state?.session_id;
+  if (!session_id) return;
+
+  const data = {
+    gaze_contact: payload.gaze ?? 0,
+    posture_score: payload.posture ?? 0,
+    emotion: payload.emotion ?? 'neutral',
+    timestamp: Date.now(),
+  };
+
+  cvMetrics.set(session_id, data);
+  setTimeout(() => {
+    const latest = cvMetrics.get(session_id);
+    if (latest?.timestamp === data.timestamp) cvMetrics.delete(session_id);
+  }, 2000);
 }
 
 // ─────────────────────────────────────────────────
@@ -254,6 +277,7 @@ async function handleChat(ws, { message }) {
       message,
       session.rep_id || 'demo-rep',
       session_id,
+      session,
       (event) => {
         if (ac.signal.aborted) return;
 
@@ -283,11 +307,14 @@ async function handleChat(ws, { message }) {
             
             // Fire parallel TTS paths immediately after LLM text
             (async () => {
+              if (ac.signal.aborted) return;
               const llmText = event.payload.text;
               const [streamResult, tsResult] = await Promise.allSettled([
                 runTTSStreaming(llmText, session),
                 runTTSWithTimestamps(llmText, session),
               ]);
+
+              if (ac.signal.aborted) return;
 
               // Stream audio chunks
               if (streamResult.status === 'fulfilled' && streamResult.value) {
@@ -295,9 +322,14 @@ async function handleChat(ws, { message }) {
                   const reader = streamResult.value.getReader();
                   let isFirst = true;
                   while (true) {
+                    if (ac.signal.aborted) {
+                      try { reader.cancel(); } catch (_) {}
+                      return;
+                    }
                     const { done, value } = await reader.read();
                     if (done) {
                       send(ws, 'tts_chunk', { chunkBase64: null, isFirst: false, isFinal: true });
+                      send(ws, 'tts_done', { durationMs: Date.now() - session.started_at });
                       break;
                     }
                     send(ws, 'tts_chunk', {
@@ -317,7 +349,7 @@ async function handleChat(ws, { message }) {
                 ? tsResult.value.blendshapes
                 : [];
               if (blendshapes.length) {
-                send(ws, 'lipsync_blendshapes', { frames: blendshapes });
+                send(ws, 'lipsync_blendshapes', { blendshapes, frames: blendshapes });
               }
 
               // Also send legacy tts_audio for fallback clients

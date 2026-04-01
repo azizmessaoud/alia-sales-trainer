@@ -91,7 +91,7 @@ export async function runTTSWithTimestamps(text, session = null, options = {}) {
     let blendshapes = [];
     if (data.alignment && Array.isArray(data.alignment.characters) && data.alignment.characters.length > 0) {
       try {
-        blendshapes = alignmentToVisemes(data.alignment);
+        blendshapes = alignmentToVisemes(data.alignment, session?.language || process.env.DEFAULT_LANGUAGE || 'en-US');
         console.log(`  ✅ ElevenLabs alignment → ${blendshapes.length} blendshape frames`);
       } catch (alignErr) {
         console.warn('⚠️ Alignment conversion failed, using alignment raw:', alignErr.message);

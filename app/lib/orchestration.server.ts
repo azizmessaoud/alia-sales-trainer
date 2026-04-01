@@ -364,7 +364,7 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
         audioBase64 = tsRes.value.audioBase64;
         // blendshapes from alignment or mock fallback
         if (tsRes.value.alignment) {
-          blendshapes = alignmentToVisemes(tsRes.value.alignment);
+          blendshapes = alignmentToVisemes(tsRes.value.alignment, state.language ?? 'en-US');
         } else {
           blendshapes = generateMockBlendshapes(audioBase64);
           isMock = true;

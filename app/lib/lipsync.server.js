@@ -313,7 +313,7 @@ export async function runLipSync(audioBase64, language = 'en-US', options = {}) 
   return { frames: generateMockBlendshapes(audioBase64), isMock: true };
 }
 
-const CHAR_TO_VISEME = {
+const CHAR_TO_VISEME_BASE = {
   // Silence
   ' ': 'viseme_sil', ',': 'viseme_sil', '.': 'viseme_sil',
   '!': 'viseme_sil', '?': 'viseme_sil', '\n': 'viseme_sil',
@@ -351,6 +351,22 @@ const CHAR_TO_VISEME = {
   'è': 'viseme_E', 'ê': 'viseme_E', 'ù': 'viseme_U',
 };
 
+const CHAR_TO_VISEME_BY_LANGUAGE = {
+  'fr-FR': {
+    'œ': 'viseme_E', 'ø': 'viseme_E', 'é': 'viseme_E', 'è': 'viseme_E', 'ê': 'viseme_E',
+    'à': 'viseme_aa', 'â': 'viseme_aa', 'ô': 'viseme_O', 'ù': 'viseme_U', 'ç': 'viseme_SS',
+  },
+  'ar-SA': {
+    'ص': 'viseme_SS', 'ض': 'viseme_TH', 'ط': 'viseme_TH', 'ظ': 'viseme_TH',
+    'ح': 'viseme_FF', 'خ': 'viseme_kk', 'ع': 'viseme_aa',
+    'ق': 'viseme_kk', 'غ': 'viseme_kk',
+  },
+  'es-ES': {
+    'ñ': 'viseme_nn',
+    'á': 'viseme_aa', 'é': 'viseme_E', 'í': 'viseme_I', 'ó': 'viseme_O', 'ú': 'viseme_U',
+  },
+};
+
 const VISEME_JAW = {
   'viseme_aa': 0.55, 'viseme_O': 0.45, 'viseme_E': 0.30,
   'viseme_I': 0.25, 'viseme_U': 0.20, 'viseme_PP': 0.05,
@@ -365,14 +381,17 @@ const FPS_MS = 1000 / 30;
  * Convert ElevenLabs character alignment to 30fps RPM viseme frames.
  * alignment = { characters[], character_start_times_seconds[], character_end_times_seconds[] }
  */
-export function alignmentToVisemes(alignment) {
+export function alignmentToVisemes(alignment, language = 'en-US') {
+  if (!alignment || !Array.isArray(alignment.characters)) return [];
+  const languageMap = CHAR_TO_VISEME_BY_LANGUAGE[language] ?? {};
+  const charToViseme = { ...CHAR_TO_VISEME_BASE, ...languageMap };
   const frames = [];
 
   for (let i = 0; i < alignment.characters.length; i++) {
     const char = alignment.characters[i].toLowerCase();
     const startMs = alignment.character_start_times_seconds[i] * 1000;
     const endMs = alignment.character_end_times_seconds[i] * 1000;
-    const viseme = CHAR_TO_VISEME[char] ?? 'viseme_sil';
+    const viseme = charToViseme[char] ?? 'viseme_sil';
     const jawVal = VISEME_JAW[viseme] ?? 0.0;
 
     for (let t = startMs; t < endMs; t += FPS_MS) {
