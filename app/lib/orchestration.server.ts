@@ -5,10 +5,17 @@
  */
 import 'dotenv/config';
 import * as LangGraph from '@langchain/langgraph';
+import { LangChainTracer } from '@langchain/core/tracers/tracer_langchain';
 
 // Feature flags for Phase 3 optimization
 const useStreaming  = process.env.USE_ELEVENLABS_STREAMING === 'true';
 const useLipsync    = process.env.USE_ELEVENLABS_LIPSYNC   === 'true';
+
+const tracer = process.env.LANGSMITH_API_KEY
+  ? new LangChainTracer({
+      projectName: process.env.LANGSMITH_PROJECT ?? 'alia-medical-training',
+    })
+  : null;
 
 // LangGraph runtime-safe bindings. Some installed versions export
 // `Annotation` while others do not export typings — provide a
@@ -192,6 +199,8 @@ const StateAnnotation = Annotation.Root({
  */
 const complianceNode = async (state: OrchestrationState): Promise<Partial<OrchestrationState>> => {
   const start = Date.now();
+  const timerLabel = `[ALIA] ${state.sessionId} compliance`;
+  console.time(timerLabel);
   try {
     if (state.onUpdate) state.onUpdate({ type: 'stage', payload: { stage: 'compliance' } });
     const result = await evaluateCompliance(state.userMessage);
@@ -216,6 +225,8 @@ const complianceNode = async (state: OrchestrationState): Promise<Partial<Orches
       error: `Compliance failed: ${error instanceof Error ? error.message : String(error)}`,
       stage: 'error',
     };
+  } finally {
+    console.timeEnd(timerLabel);
   }
 };
 
@@ -224,6 +235,8 @@ const complianceNode = async (state: OrchestrationState): Promise<Partial<Orches
  */
 const retrievalNode = async (state: OrchestrationState): Promise<Partial<OrchestrationState>> => {
   const start = Date.now();
+  const timerLabel = `[ALIA] ${state.sessionId} retrieval`;
+  console.time(timerLabel);
   try {
     if (state.onUpdate) state.onUpdate({ type: 'stage', payload: { stage: 'memory' } });
     // Skip if non-compliant
@@ -246,15 +259,28 @@ const retrievalNode = async (state: OrchestrationState): Promise<Partial<Orchest
       .join(' ')
       || '';
 
+    const memoryDuration = Date.now() - start;
+    console.log(JSON.stringify({
+      kind: 'rag_timing',
+      sessionId: state.sessionId,
+      repId: state.repId,
+      language: state.language ?? 'en-US',
+      memoryCount: memories?.length ?? 0,
+      durationMs: memoryDuration,
+      timestamp: Date.now(),
+    }));
+
     return {
       memories,
       memoryContext,
       repProfile: profile,
-      metrics: { ...state.metrics, memoryTime: Date.now() - start },
+      metrics: { ...state.metrics, memoryTime: memoryDuration },
     };
   } catch (error) {
     console.warn('⚠️ Memory retrieval failed, continuing without context:', error);
     return {};
+  } finally {
+    console.timeEnd(timerLabel);
   }
 };
 
@@ -263,6 +289,8 @@ const retrievalNode = async (state: OrchestrationState): Promise<Partial<Orchest
  */
 const llmNode = async (state: OrchestrationState): Promise<Partial<OrchestrationState>> => {
   const start = Date.now();
+  const timerLabel = `[ALIA] ${state.sessionId} llm`;
+  console.time(timerLabel);
   try {
     if (state.onUpdate) state.onUpdate({ type: 'stage', payload: { stage: 'llm' } });
     let responseText: string;
@@ -301,6 +329,8 @@ const llmNode = async (state: OrchestrationState): Promise<Partial<Orchestration
       error: `LLM failed: ${error instanceof Error ? error.message : String(error)}`,
       stage: 'error',
     };
+  } finally {
+    console.timeEnd(timerLabel);
   }
 };
 
@@ -310,6 +340,8 @@ const llmNode = async (state: OrchestrationState): Promise<Partial<Orchestration
  */
 const ttsNode = async (state: OrchestrationState): Promise<Partial<OrchestrationState>> => {
   const start = Date.now();
+  const timerLabel = `[ALIA] ${state.sessionId} tts`;
+  console.time(timerLabel);
   try {
     if (state.onUpdate) state.onUpdate({ type: 'stage', payload: { stage: 'tts' } });
     if (!state.llmResponse) throw new Error('No LLM response for TTS');
@@ -385,6 +417,8 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
       error: `TTS failed: ${error instanceof Error ? error.message : String(error)}`,
       stage: 'error',
     };
+  } finally {
+    console.timeEnd(timerLabel);
   }
 };
 
@@ -392,9 +426,15 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
  * NODE 5: LipSync Generation (merged into ttsNode for Phase 3)
  */
 const lipsyncNode = async (state: OrchestrationState): Promise<Partial<OrchestrationState>> => {
+  const timerLabel = `[ALIA] ${state.sessionId} lipsync`;
+  console.time(timerLabel);
   // In Phase 3, lipsync is handled within ttsNode via Promise.allSettled.
   // This node is now a no-op compatibility placeholder.
-  return {};
+  try {
+    return {};
+  } finally {
+    console.timeEnd(timerLabel);
+  }
 };
 
 // =====================================================
@@ -452,7 +492,20 @@ export async function orchestrateConversation(
   };
 
   try {
-    const result = await graph.invoke(initialState);
+    const result = await graph.invoke(initialState, {
+      callbacks: tracer ? [tracer] : [],
+      configurable: {
+        thread_id: sessionId,
+        run_name: `alia-pipeline-${repId}`,
+      },
+      metadata: {
+        repId,
+        sessionId,
+        language: session?.language ?? 'en-US',
+        useStreaming,
+        useLipsync,
+      },
+    });
     result.metrics.totalTime = Date.now() - result.timestamp;
     result.stage = 'complete';
     
