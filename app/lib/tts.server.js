@@ -3,11 +3,12 @@
  * Provider order: ElevenLabs -> NVIDIA FastPitch -> mock WAV.
  */
 
+import { alignmentToVisemes } from './lipsync.server.js';
+
 const ELEVENLABS_BASE_URL = 'https://api.elevenlabs.io';
 
 /**
  * Parse a WAV buffer's RIFF header to compute actual duration in seconds.
- * Falls back to raw-byte estimate (16kHz mono 16-bit) if no header is present.
  */
 function parseWavDuration(buf) {
   try {
@@ -29,10 +30,7 @@ function parseWavDuration(buf) {
         return dataSize / (sampleRate * bytesPerSample);
       }
     }
-  } catch (_) {
-    // Fall through to the conservative estimate below.
-  }
-
+  } catch (_) {}
   return buf.length / (16000 * 2);
 }
 
@@ -42,7 +40,7 @@ function parseWavDuration(buf) {
 function getActiveVoice(session = null) {
   const bcp47 = session?.language || process.env.DEFAULT_LANGUAGE || 'en-US';
   return {
-    elevenLabsVoiceId: session?.voice_id || process.env.ELEVENLABS_VOICE_ID || '',
+    elevenLabsVoiceId: session?.voice_id || process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM', // Default: Rachel
     nvidiaTtsVoice: session?.tts_voice || process.env.TTS_VOICE || 'female',
     languageCode: bcp47ToISO639(bcp47),
   };
@@ -53,71 +51,115 @@ function bcp47ToISO639(tag) {
   return tag.split('-')[0].toLowerCase();
 }
 
-function generateMockAudio(text) {
-  const wordCount = text.split(/\s+/).length;
-  const durationSeconds = Math.min(15, Math.max(0.8, wordCount / 2.3));
-  const sampleRate = 16000;
-  const samples = Math.floor(sampleRate * durationSeconds);
-  const audioData = new Int16Array(samples);
+/**
+ * ELEVENLABS: TTS with Timestamps (for lip-sync alignment)
+ * Returns audio + alignment + converted blendshapes for 30fps animation
+ */
+export async function runTTSWithTimestamps(text, session = null, options = {}) {
+  const voices = getActiveVoice(session);
+  const apiKey = options.elevenLabsApiKey || process.env.ELEVENLABS_API_KEY || '';
+  const modelId = options.elevenLabsModelId || process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2';
 
-  const header = Buffer.alloc(44);
-  header.write('RIFF', 0);
-  header.writeUInt32LE(36 + audioData.byteLength, 4);
-  header.write('WAVE', 8);
-  header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20);
-  header.writeUInt16LE(1, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(sampleRate * 2, 28);
-  header.writeUInt16LE(2, 32);
-  header.writeUInt16LE(16, 34);
-  header.write('data', 36);
-  header.writeUInt32LE(audioData.byteLength, 40);
+  try {
+    if (!apiKey || !voices.elevenLabsVoiceId) {
+      throw new Error('ElevenLabs credentials missing');
+    }
 
-  const buf = Buffer.concat([header, Buffer.from(audioData.buffer)]);
-  return { audioBase64: buf.toString('base64'), duration: durationSeconds, isMock: true };
+    const resp = await fetch(`${ELEVENLABS_BASE_URL}/v1/text-to-speech/${voices.elevenLabsVoiceId}/with-timestamps`, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text,
+        model_id: modelId,
+        language_code: voices.languageCode,
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      }),
+    });
+
+    if (!resp.ok) {
+      throw new Error(`ElevenLabs /with-timestamps HTTP ${resp.status}`);
+    }
+
+    const data = await resp.json();
+    const audioBuffer = Buffer.from(data.audio_base64, 'base64');
+    const duration = parseWavDuration(audioBuffer);
+
+    // Convert ElevenLabs character alignment to 30fps blendshape frames
+    let blendshapes = [];
+    if (data.alignment && Array.isArray(data.alignment.characters) && data.alignment.characters.length > 0) {
+      try {
+        blendshapes = alignmentToVisemes(data.alignment);
+        console.log(`  ✅ ElevenLabs alignment → ${blendshapes.length} blendshape frames`);
+      } catch (alignErr) {
+        console.warn('⚠️ Alignment conversion failed, using alignment raw:', alignErr.message);
+      }
+    }
+
+    return {
+      audioBase64: data.audio_base64,
+      alignment: data.alignment,
+      blendshapes,
+      duration,
+      isMock: false,
+    };
+  } catch (err) {
+    console.warn(`⚠️ ElevenLabs /with-timestamps failed: ${err.message}`);
+    // Fallback to standard TTS on any error
+    return runTTS(text, session, options);
+  }
 }
 
+/**
+ * ELEVENLABS: TTS Streaming
+ */
+export async function runTTSStreaming(text, session = null, options = {}) {
+  const voices = getActiveVoice(session);
+  const apiKey = options.elevenLabsApiKey || process.env.ELEVENLABS_API_KEY || '';
+  const modelId = options.elevenLabsModelId || process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2';
+
+  if (!apiKey || !voices.elevenLabsVoiceId) {
+    throw new Error('ElevenLabs credentials missing');
+  }
+
+  const resp = await fetch(`${ELEVENLABS_BASE_URL}/v1/text-to-speech/${voices.elevenLabsVoiceId}/stream`, {
+    method: 'POST',
+    headers: {
+      'xi-api-key': apiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      text,
+      model_id: modelId,
+      language_code: voices.languageCode,
+      voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+    }),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`ElevenLabs /stream error: ${resp.status}`);
+  }
+
+  return resp.body; // Returns a ReadableStream
+}
+
+/**
+ * Legacy Sequential TTS (Fallback chain)
+ */
 export async function runTTS(text, session = null, options = {}) {
   const voices = getActiveVoice(session);
   const nvidiaApiKey = options.nvidiaApiKey || process.env.NVIDIA_API_KEY || '';
   const nvidiaBaseUrl = options.nvidiaBaseUrl || 'https://integrate.api.nvidia.com/v1';
   const nvidiaModel = options.nvidiaModel || 'nvidia/fastpitch-hifigan';
   const elevenLabsApiKey = options.elevenLabsApiKey || process.env.ELEVENLABS_API_KEY || '';
-  const elevenLabsModelId = options.elevenLabsModelId || process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2';
 
   if (elevenLabsApiKey && voices.elevenLabsVoiceId) {
     try {
-      const resp = await Promise.race([
-        fetch(`${ELEVENLABS_BASE_URL}/v1/text-to-speech/${voices.elevenLabsVoiceId}`, {
-          method: 'POST',
-          headers: {
-            'xi-api-key': elevenLabsApiKey,
-            'Content-Type': 'application/json',
-            Accept: 'audio/wav',
-          },
-          body: JSON.stringify({
-            text,
-            model_id: elevenLabsModelId,
-            language_code: voices.languageCode,
-            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-          }),
-        }),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('ElevenLabs TTS timeout')), 15000)
-        ),
-      ]);
-
-      if (!resp.ok) {
-        throw new Error(`ElevenLabs TTS API error: ${resp.status} ${resp.statusText}`);
-      }
-
-      const ab = await resp.arrayBuffer();
-      const buf = Buffer.from(ab);
-      const duration = parseWavDuration(buf);
-      console.log(`  🎙️ TTS provider: elevenlabs [${voices.elevenLabsVoiceId}] lang=${voices.languageCode}`);
-      return { audioBase64: buf.toString('base64'), duration, isMock: false };
+      const result = await runTTSWithTimestamps(text, session, options);
+      console.log(`  🎙️ TTS provider: elevenlabs [with-timestamps]`);
+      return { ...result, isMock: false };
     } catch (e) {
       console.warn('⚠️ ElevenLabs TTS failed, falling back to NVIDIA:', e.message);
     }
@@ -125,36 +167,33 @@ export async function runTTS(text, session = null, options = {}) {
 
   if (nvidiaApiKey) {
     try {
-      const resp = await Promise.race([
-        fetch(`${nvidiaBaseUrl}/audio/speech`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${nvidiaApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: nvidiaModel,
-            input: text,
-            voice: voices.nvidiaTtsVoice,
-          }),
+      const resp = await fetch(`${nvidiaBaseUrl}/audio/speech`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${nvidiaApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: nvidiaModel,
+          input: text,
+          voice: voices.nvidiaTtsVoice,
         }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('TTS timeout')), 10000)),
-      ]);
+      });
 
-      if (!resp.ok) {
-        throw new Error(`NVIDIA TTS API error: ${resp.status} ${resp.statusText}`);
+      if (resp.ok) {
+        const ab = await resp.arrayBuffer();
+        const buf = Buffer.from(ab);
+        console.log(`  🎙️ TTS provider: nvidia [${voices.nvidiaTtsVoice}]`);
+        return { audioBase64: buf.toString('base64'), duration: parseWavDuration(buf), isMock: false };
       }
-
-      const ab = await resp.arrayBuffer();
-      const buf = Buffer.from(ab);
-      const duration = parseWavDuration(buf);
-      console.log(`  🎙️ TTS provider: nvidia [${voices.nvidiaTtsVoice}]`);
-      return { audioBase64: buf.toString('base64'), duration, isMock: false };
     } catch (e) {
       console.warn('⚠️ NVIDIA TTS failed, using mock:', e.message);
     }
   }
 
-  console.log('  🎙️ TTS provider: mock');
-  return generateMockAudio(text);
+  // Mock fallback
+  const wordCount = text.split(/\s+/).length;
+  const duration = Math.max(1, wordCount / 2.5);
+  return { audioBase64: '', duration, isMock: true };
 }
+
