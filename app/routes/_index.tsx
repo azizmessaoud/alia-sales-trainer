@@ -56,6 +56,7 @@ export default function Index() {
   });
   const [sessionStatus, setSessionStatus] = useState<'active' | 'paused' | 'completed'>('active');
   const [error, setError] = useState<string | null>(null);
+  const [sessionLanguage, setSessionLanguage] = useState<string>('en-US');
   const [lipSyncDebug, setLipSyncDebug] = useState<{ jawMin: number; jawMax: number; jawCurrent: number; speakingFactor: number; elapsedMs: number; frameIndex: number; frameCount: number; isPlaying: boolean; clockSource: string; offsetMs: number; peakJaw: number; peakFrame: number; peakElapsed: number; appliedTargets: number } | null>(null);
 
   // Refs
@@ -388,7 +389,7 @@ export default function Index() {
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.lang = 'en-US';
+    recognition.lang = sessionLanguage;
     recognition.maxAlternatives = 1;
 
     recognition.onresult = (event: any) => {
@@ -454,6 +455,9 @@ export default function Index() {
   useEffect(() => {
     if (wsStatus === 'connected' && !hasStartedSession.current) {
       hasStartedSession.current = true;
+      // Set session language from environment or default
+      const envLanguage = process.env.DEFAULT_LANGUAGE ?? 'en-US';
+      setSessionLanguage(envLanguage);
       startSession();
     }
   }, [wsStatus, startSession]);
