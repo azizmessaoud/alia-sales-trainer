@@ -35,24 +35,52 @@ if (RealStateGraph && LangGraphAnnotation) {
   class LocalStateGraph {
     private nodes = new Map<string, Function>();
     private edges: Array<[string, string]> = [];
+    private conditionalEdges = new Map<string, { routeFn: Function; mapping: Record<string, string> }>();
     private entry: string | null = null;
     constructor(_schema?: any) {}
     addNode(name: string, fn: Function) { this.nodes.set(name, fn); return this; }
     addEdge(a: string, b: string) { this.edges.push([a, b]); return this; }
+    addConditionalEdges(from: string, routeFn: Function, mapping: Record<string, string>) {
+      this.conditionalEdges.set(from, { routeFn, mapping });
+      return this;
+    }
     setEntryPoint(name: string) { this.entry = name; return this; }
     compile() {
       const nodes = this.nodes;
-      const order = ['compliance','memory','llm','tts','lipsync'];
+      const edges = this.edges;
+      const conditionalEdges = this.conditionalEdges;
       return {
         invoke: async (initialState: any) => {
           let state = { ...initialState };
-          for (const name of order) {
-            const node = nodes.get(name);
-            if (!node) continue;
-            const res = await node(state) || {};
-            state = { ...state, ...res };
-            if (state.stage === 'error') break;
+          let current = this.entry || 'compliance';
+          let guard = 0;
+
+          while (current && guard < 32) {
+            guard += 1;
+            if (!(current === 'memory' && state.isCompliant === false)) {
+              const node = nodes.get(current);
+              if (node) {
+                const res = await node(state) || {};
+                state = { ...state, ...res };
+                if (state.stage === 'error') break;
+              }
+            }
+
+            if (conditionalEdges.has(current)) {
+              const { routeFn, mapping } = conditionalEdges.get(current)!;
+              const route = routeFn(state);
+              const next = mapping[route];
+              if (!next || next === END) break;
+              current = next;
+              continue;
+            }
+
+            const nextEdge = edges.find(([from]) => from === current);
+            const next = nextEdge?.[1];
+            if (!next || next === END) break;
+            current = next;
           }
+
           return state;
         }
       };
@@ -74,19 +102,19 @@ import { NvidiaNIM } from './nvidia-nim.server.js';
 import { evaluateCompliance, buildComplianceInterruptionText } from './compliance-gate.server.js';
 import { MemoryOS, type RepProfile } from './memory-os.server.js';
 import { RAGPipeline } from './rag-pipeline.server.js';
-import { runTTS } from './tts.server.js';
-import { alignmentToVisemes, generateMockBlendshapes, runLipSync } from './lipsync.server.js';
+import { runTTS, runTTSStreaming, runTTSWithTimestamps } from './tts.server.js';
+import { alignmentToVisemes, generateMockBlendshapes } from './lipsync.server.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
-// Runtime fallback for streaming/timestamps (not available in Phase 1a)
-let runTTSStreaming: Function = async () => { throw new Error('runTTSStreaming not implemented'); };
-let runTTSWithTimestamps: Function = async () => { throw new Error('runTTSWithTimestamps not implemented'); };
-try {
-  const ttsModule = await import('./tts.server.js');
-  if (ttsModule.runTTSStreaming) runTTSStreaming = ttsModule.runTTSStreaming;
-  if (ttsModule.runTTSWithTimestamps) runTTSWithTimestamps = ttsModule.runTTSWithTimestamps;
-} catch (_) {
-  console.warn('⚠️ Streaming/timestamps TTS functions not available yet (Phase 1b)');
+type SupportedLanguage = 'en-US' | 'fr-FR' | 'ar-SA' | 'es-ES';
+type DetectedLanguage = 'en' | 'fr' | 'ar' | 'es';
+
+function detectLanguage(language?: string): DetectedLanguage {
+  const code = (language || 'en-US').slice(0, 2).toLowerCase();
+  if (code === 'fr') return 'fr';
+  if (code === 'ar') return 'ar';
+  if (code === 'es') return 'es';
+  return 'en';
 }
 
 // =====================================================
@@ -97,7 +125,7 @@ try {
  * Update Event for progressive streaming
  */
 export interface PipelineUpdate {
-  type: 'stage' | 'llm_text' | 'tts_audio' | 'lipsync_blendshapes' | 'compliance_violation' | 'error';
+  type: 'stage' | 'llm_text' | 'tts_chunk' | 'tts_audio' | 'lipsync_blendshapes' | 'compliance_violation' | 'error';
   payload: any;
 }
 
@@ -111,7 +139,12 @@ export interface OrchestrationState {
   sessionId: string;
   timestamp: number;
   session?: { language?: string; [key: string]: any };
-  language?: string;
+  language?: SupportedLanguage;
+  detectedLanguage?: DetectedLanguage;
+  ragNamespace?: string;
+  gazeContact?: number;
+  postureScore?: number;
+  emotion?: string;
 
   // intermediate processing
   isCompliant: boolean;
@@ -131,14 +164,13 @@ export interface OrchestrationState {
   }>;
 
   // Control & Metrics
-  stage: 'compliance' | 'memory' | 'llm' | 'tts' | 'lipsync' | 'complete' | 'error';
+  stage: 'compliance' | 'memory' | 'llm' | 'tts' | 'complete' | 'error';
   error?: string;
   metrics: {
     complianceTime: number;
     memoryTime: number;
     llmTime: number;
     ttsTime: number;
-    lipsyncTime: number;
     totalTime: number;
   };
 
@@ -156,7 +188,12 @@ const StateAnnotation = Annotation.Root({
   sessionId: Annotation<string>(),
   timestamp: Annotation<number>(),
   session: Annotation<any | undefined>(),
-  language: Annotation<string | undefined>(),
+  language: Annotation<SupportedLanguage | undefined>(),
+  detectedLanguage: Annotation<DetectedLanguage | undefined>(),
+  ragNamespace: Annotation<string | undefined>(),
+  gazeContact: Annotation<number | undefined>(),
+  postureScore: Annotation<number | undefined>(),
+  emotion: Annotation<string | undefined>(),
   isCompliant: Annotation<boolean>(),
   complianceReason: Annotation<string | undefined>(),
   memories: Annotation<any[] | undefined>(),
@@ -167,14 +204,13 @@ const StateAnnotation = Annotation.Root({
   audioDuration: Annotation<number | undefined>(),
   isMock: Annotation<boolean | undefined>(),
   blendshapes: Annotation<any[] | undefined>(),
-  stage: Annotation<'compliance' | 'memory' | 'llm' | 'tts' | 'lipsync' | 'complete' | 'error'>(),
+  stage: Annotation<'compliance' | 'memory' | 'llm' | 'tts' | 'complete' | 'error'>(),
   error: Annotation<string | undefined>(),
   metrics: Annotation<{
     complianceTime: number;
     memoryTime: number;
     llmTime: number;
     ttsTime: number;
-    lipsyncTime: number;
     totalTime: number;
   }>({
     reducer: (x: any, y: any) => ({ ...x, ...y }),
@@ -183,12 +219,31 @@ const StateAnnotation = Annotation.Root({
       memoryTime: 0,
       llmTime: 0,
       ttsTime: 0,
-      lipsyncTime: 0,
       totalTime: 0,
     }),
   }),
   onUpdate: Annotation<((event: PipelineUpdate) => void) | undefined>(),
 });
+
+const SYSTEM_PROMPTS: Record<SupportedLanguage, string> = {
+  'en-US': 'You are ALIA, an expert pharmaceutical sales training coach. Keep responses concise and compliant.',
+  'fr-FR': 'Vous êtes ALIA, formatrice experte en vente pharmaceutique. Réponses concises et conformes.',
+  'ar-SA': 'أنتِ آليا، مدربة خبيرة في المبيعات الدوائية. اجعلي الردود موجزة ومتوافقة.',
+  'es-ES': 'Eres ALIA, instructora experta en ventas farmacéuticas. Respuestas breves y conformes.',
+};
+
+function buildMultimodalContext(state: OrchestrationState): string {
+  const gaze = Math.round((state.gazeContact ?? 0.5) * 100);
+  const posture = Math.round((state.postureScore ?? 0.5) * 100);
+  const emotion = state.emotion ?? 'neutral';
+
+  return [
+    '--- REP BEHAVIORAL STATE ---',
+    `Gaze contact: ${gaze}%`,
+    `Posture score: ${posture}%`,
+    `Detected emotion: ${emotion}`,
+  ].join('\n');
+}
 
 // =====================================================
 // Graph Nodes (Agents)
@@ -242,11 +297,16 @@ const retrievalNode = async (state: OrchestrationState): Promise<Partial<Orchest
     // Skip if non-compliant
     if (!state.isCompliant) return {};
 
+    const detectedLanguage = detectLanguage(state.language);
+    const ragNamespace = `vital-${detectedLanguage}`;
+
     // Retrieve memories and profile in parallel
     const [memories, profile] = await Promise.all([
       MemoryOS.retrieveEpisodeMemories({
         rep_id: state.repId,
         query: state.userMessage,
+        language: detectedLanguage,
+        ragNamespace,
         limit: 3,
       }),
       MemoryOS.getRepProfile(state.repId)
@@ -265,6 +325,7 @@ const retrievalNode = async (state: OrchestrationState): Promise<Partial<Orchest
       sessionId: state.sessionId,
       repId: state.repId,
       language: state.language ?? 'en-US',
+      ragNamespace,
       memoryCount: memories?.length ?? 0,
       durationMs: memoryDuration,
       timestamp: Date.now(),
@@ -274,6 +335,8 @@ const retrievalNode = async (state: OrchestrationState): Promise<Partial<Orchest
       memories,
       memoryContext,
       repProfile: profile,
+      detectedLanguage,
+      ragNamespace,
       metrics: { ...state.metrics, memoryTime: memoryDuration },
     };
   } catch (error) {
@@ -298,13 +361,14 @@ const llmNode = async (state: OrchestrationState): Promise<Partial<Orchestration
     if (!state.isCompliant) {
       responseText = buildComplianceInterruptionText(state.complianceReason || '');
     } else {
-      // Use RAG Pipeline to build a rich augmented prompt
-      // @ts-ignore - buildAugmentedPrompt expects MemorySearchResult but types might differ slightly
-      const systemPrompt = RAGPipeline.buildAugmentedPrompt(
+      const lang = (state.language ?? 'en-US') as SupportedLanguage;
+      const personaPrompt = SYSTEM_PROMPTS[lang] ?? SYSTEM_PROMPTS['en-US'];
+      const ragPrompt = RAGPipeline.buildAugmentedPrompt(
         state.userMessage,
         state.memories || [],
         state.repProfile || null
       );
+      const systemPrompt = `${personaPrompt}\n\n${ragPrompt}\n\n${buildMultimodalContext(state)}`;
 
       const messages: ChatCompletionMessageParam[] = [
         { role: 'user', content: state.userMessage },
@@ -355,6 +419,32 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
         runTTSWithTimestamps(state.llmResponse, session as any),
       ]);
 
+      if (streamRes.status === 'fulfilled' && streamRes.value?.getReader && state.onUpdate) {
+        try {
+          const reader = streamRes.value.getReader();
+          let isFirst = true;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              state.onUpdate({ type: 'tts_chunk', payload: { chunkBase64: null, isFirst: false, isFinal: true } });
+              break;
+            }
+
+            state.onUpdate({
+              type: 'tts_chunk',
+              payload: {
+                chunkBase64: Buffer.from(value).toString('base64'),
+                isFirst,
+                isFinal: false,
+              },
+            });
+            isFirst = false;
+          }
+        } catch (streamErr) {
+          console.warn('⚠️ ttsNode stream read failed:', (streamErr as Error).message);
+        }
+      }
+
       // audioBase64 from tsRes (full audio) or fallback runTTS
       let audioBase64: string;
       let isMock = false;
@@ -394,7 +484,7 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
     } else {
       // Compatibility path — existing tests pass through here
       const ttsResult = await runTTS(state.llmResponse, session as any);
-      const { frames } = await runLipSync(ttsResult.audioBase64, state.language ?? 'en-US');
+      const frames = generateMockBlendshapes(ttsResult.audioBase64);
 
       const duration = Date.now() - start;
       if (state.onUpdate) {
@@ -422,21 +512,6 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
   }
 };
 
-/**
- * NODE 5: LipSync Generation (merged into ttsNode for Phase 3)
- */
-const lipsyncNode = async (state: OrchestrationState): Promise<Partial<OrchestrationState>> => {
-  const timerLabel = `[ALIA] ${state.sessionId} lipsync`;
-  console.time(timerLabel);
-  // In Phase 3, lipsync is handled within ttsNode via Promise.allSettled.
-  // This node is now a no-op compatibility placeholder.
-  try {
-    return {};
-  } finally {
-    console.timeEnd(timerLabel);
-  }
-};
-
 // =====================================================
 // Graph Construction
 // =====================================================
@@ -447,12 +522,14 @@ const workflow = (new (StateGraph as any)(StateAnnotation) as any)
   .addNode('memory', retrievalNode)
   .addNode('llm', llmNode)
   .addNode('tts', ttsNode)
-  .addNode('lipsync', lipsyncNode)
-  .addEdge('compliance', 'memory')
+  .addConditionalEdges('compliance', (s: OrchestrationState) => (s.isCompliant ? 'memory' : 'llm'), {
+    memory: 'memory',
+    llm: 'llm',
+  })
   .addEdge('memory', 'llm')
   .addEdge('llm', 'tts')
-  .addEdge('tts', 'lipsync')
-  .addEdge('lipsync', END);
+  .addEdge('tts', END)
+  .setEntryPoint('compliance');
 
 // Compile the graph
 const graph = (workflow as any).compile();
@@ -469,14 +546,20 @@ export async function orchestrateConversation(
   repId: string = 'demo-rep',
   sessionId: string = 'default',
   session?: { language?: string; [key: string]: any },
-  onUpdate?: (event: PipelineUpdate) => void
+  onUpdate?: (event: PipelineUpdate) => void,
+  cvMetrics?: { gaze?: number; posture?: number; emotion?: string }
 ): Promise<OrchestrationState> {
   const initialState: OrchestrationState = {
     userMessage,
     repId,
     sessionId,
     session,
-    language: session?.language ?? 'en-US',
+    language: (session?.language as SupportedLanguage) ?? 'en-US',
+    detectedLanguage: detectLanguage(session?.language),
+    ragNamespace: `vital-${detectLanguage(session?.language)}`,
+    gazeContact: cvMetrics?.gaze ?? 0.5,
+    postureScore: cvMetrics?.posture ?? 0.5,
+    emotion: cvMetrics?.emotion ?? 'neutral',
     onUpdate,
     timestamp: Date.now(),
     isCompliant: true,
@@ -486,7 +569,6 @@ export async function orchestrateConversation(
       memoryTime: 0,
       llmTime: 0,
       ttsTime: 0,
-      lipsyncTime: 0,
       totalTime: 0,
     },
   };

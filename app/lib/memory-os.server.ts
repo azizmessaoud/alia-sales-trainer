@@ -168,6 +168,8 @@ export async function storeEpisodeMemory(params: {
 export async function retrieveEpisodeMemories(params: {
   rep_id: string;
   query: string;
+  language?: string;
+  ragNamespace?: string;
   threshold?: number;
   limit?: number;
 }): Promise<MemorySearchResult[]> {

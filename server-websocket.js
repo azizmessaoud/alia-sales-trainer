@@ -16,8 +16,10 @@
  *   { type: 'message_received'      }
  *   { type: 'stage',                payload: { stage } }
  *   { type: 'llm_text',             payload: { text, llmTime } }
+ *   { type: 'tts_chunk',            payload: { chunkBase64, isFirst, isFinal } }
  *   { type: 'tts_audio',            payload: { audio, duration, ttsTime } }
  *   { type: 'lipsync_blendshapes',  payload: { blendshapes, lipsyncTime } }
+ *   { type: 'tts_done',             payload: { durationMs } }
  *   { type: 'pipeline_complete',    payload: { totalTime, breakdown } }
  *   { type: 'error',                payload: { message } }
  */
@@ -56,10 +58,6 @@ import crypto from 'node:crypto';
 import {
   orchestrateConversation,
 } from './app/lib/orchestration.server.ts';
-import {
-  runTTSStreaming,
-  runTTSWithTimestamps,
-} from './app/lib/tts.server.js';
 
 // ─────────────────────────────────────────────────
 // Configuration
@@ -273,6 +271,7 @@ async function handleChat(ws, { message }) {
 
   try {
     // Run LangGraph Orchestration
+    const latestCv = cvMetrics.get(session_id);
     await orchestrateConversation(
       message,
       session.rep_id || 'demo-rep',
@@ -304,64 +303,12 @@ async function handleChat(ws, { message }) {
           case 'llm_text':
             session.messages.push({ role: 'assistant', content: event.payload.text, timestamp: Date.now() });
             send(ws, 'llm_text', event.payload);
-            
-            // Fire parallel TTS paths immediately after LLM text
-            (async () => {
-              if (ac.signal.aborted) return;
-              const llmText = event.payload.text;
-              const [streamResult, tsResult] = await Promise.allSettled([
-                runTTSStreaming(llmText, session),
-                runTTSWithTimestamps(llmText, session),
-              ]);
-
-              if (ac.signal.aborted) return;
-
-              // Stream audio chunks
-              if (streamResult.status === 'fulfilled' && streamResult.value) {
-                try {
-                  const reader = streamResult.value.getReader();
-                  let isFirst = true;
-                  while (true) {
-                    if (ac.signal.aborted) {
-                      try { reader.cancel(); } catch (_) {}
-                      return;
-                    }
-                    const { done, value } = await reader.read();
-                    if (done) {
-                      send(ws, 'tts_chunk', { chunkBase64: null, isFirst: false, isFinal: true });
-                      send(ws, 'tts_done', { durationMs: Date.now() - session.started_at });
-                      break;
-                    }
-                    send(ws, 'tts_chunk', {
-                      chunkBase64: Buffer.from(value).toString('base64'),
-                      isFirst,
-                      isFinal: false
-                    });
-                    isFirst = false;
-                  }
-                } catch (streamErr) {
-                  console.warn('⚠️ TTS stream read failed:', streamErr.message);
-                }
-              }
-
-              // Send blendshapes from timestamp result
-              const blendshapes = (tsResult.status === 'fulfilled' && tsResult.value?.blendshapes?.length)
-                ? tsResult.value.blendshapes
-                : [];
-              if (blendshapes.length) {
-                send(ws, 'lipsync_blendshapes', { blendshapes, frames: blendshapes });
-              }
-
-              // Also send legacy tts_audio for fallback clients
-              if (tsResult.status === 'fulfilled' && tsResult.value?.audioBase64) {
-                send(ws, 'tts_audio', {
-                  audio: tsResult.value.audioBase64,
-                  duration: tsResult.value.duration,
-                  ttsTime: tsResult.value.duration ? 0 : null,
-                  isMock: false
-                });
-              }
-            })();
+            break;
+          case 'tts_chunk':
+            send(ws, 'tts_chunk', event.payload);
+            if (event.payload?.isFinal) {
+              send(ws, 'tts_done', { durationMs: Date.now() - session.started_at });
+            }
             break;
           case 'tts_audio':
             send(ws, 'tts_audio', event.payload);
@@ -376,7 +323,12 @@ async function handleChat(ws, { message }) {
             send(ws, 'error', event.payload);
             break;
         }
-      }
+      },
+      latestCv ? {
+        gaze: latestCv.gaze_contact,
+        posture: latestCv.posture_score,
+        emotion: latestCv.emotion,
+      } : undefined
     );
   } catch (err) {
     if (ac.signal.aborted) return;
