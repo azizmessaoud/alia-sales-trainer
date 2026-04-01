@@ -45,6 +45,8 @@ export interface UseALIAWebSocketOptions {
   onLLMText?: (text: string, llmTime: number) => void;
   /** Fired when TTS audio arrives (start playback, or browser TTS if mock) */
   onTTSAudio?: (audioBase64: string, duration: number, ttsTime: number, isMock: boolean) => void;
+  /** Fired when TTS stream chunk arrives (for Web Audio queue scheduling) */
+  onTTSChunk?: (chunkBase64: string | null, isFirst: boolean, isFinal: boolean) => void;
   /** Fired when lip-sync blendshapes arrive (animate avatar) */
   onLipSync?: (blendshapes: Blendshape[], lipsyncTime: number, timeline?: LipSyncTimeline, isMock?: boolean) => void;
   /** Fired when the full pipeline is done */
@@ -205,6 +207,10 @@ export function useALIAWebSocket(
           payload.ttsTime,
           payload.isMock ?? false
         );
+        break;
+
+      case 'tts_chunk':
+        cbRef.current.onTTSChunk?.(payload.chunkBase64 ?? null, payload.isFirst ?? false, payload.isFinal ?? false);
         break;
 
       case 'lipsync_blendshapes':

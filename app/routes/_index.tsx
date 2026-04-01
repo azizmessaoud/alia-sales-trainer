@@ -71,6 +71,8 @@ export default function Index() {
   const audioUnlockedRef = useRef(false);
   const usingBrowserTTSRef = useRef(false);
   const ttsStartTimeRef = useRef<number>(0); // when TTS started speaking (performance.now)
+  const nextChunkTimeRef = useRef<number>(0);
+  const chunkBufferRef = useRef<AudioBufferSourceNode[]>([]);
 
   // =====================================================
   // Full-Duplex WebSocket — progressive pipeline
@@ -111,6 +113,17 @@ export default function Index() {
           console.log('🔊 Using NVIDIA TTS audio');
           usingBrowserTTSRef.current = false;
           playAudio(audioBase64, duration);
+        }
+      },
+
+      // Stage 2b arrives: stream TTS chunks for Web Audio queue scheduling
+      onTTSChunk: (chunkBase64, isFirst, isFinal) => {
+        if (chunkBase64) {
+          const bytes = base64ToUint8Array(chunkBase64);
+          scheduleChunk(bytes, isFirst);
+        }
+        if (isFinal) {
+          console.log('✅ TTS stream complete');
         }
       },
 
@@ -192,6 +205,27 @@ export default function Index() {
     } catch (err) {
       console.error('❌ AudioContext unlock failed:', err);
     }
+  }, []);
+
+  const scheduleChunk = useCallback((bytes: Uint8Array, isFirst: boolean) => {
+    if (!audioContextRef.current) return;
+    const ctx = audioContextRef.current;
+    if (isFirst) {
+      nextChunkTimeRef.current = ctx.currentTime + 0.05;
+      setIsSpeaking(true);
+      ttsStartTimeRef.current = performance.now();
+    }
+    const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    ctx.decodeAudioData(arrayBuffer as ArrayBuffer, (decoded) => {
+      const source = ctx.createBufferSource();
+      source.buffer = decoded;
+      source.connect(ctx.destination);
+      const startAt = Math.max(ctx.currentTime, nextChunkTimeRef.current);
+      source.start(startAt);
+      nextChunkTimeRef.current = startAt + decoded.duration;
+    }, (err) => {
+      console.warn('⚠️ Chunk decode failed:', err);
+    });
   }, []);
 
   // =====================================================

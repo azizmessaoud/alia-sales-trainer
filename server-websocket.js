@@ -56,6 +56,10 @@ import crypto from 'node:crypto';
 import {
   orchestrateConversation,
 } from './app/lib/orchestration.server.ts';
+import {
+  runTTSStreaming,
+  runTTSWithTimestamps,
+} from './app/lib/tts.server.js';
 
 // ─────────────────────────────────────────────────
 // Configuration
@@ -276,6 +280,56 @@ async function handleChat(ws, { message }) {
           case 'llm_text':
             session.messages.push({ role: 'assistant', content: event.payload.text, timestamp: Date.now() });
             send(ws, 'llm_text', event.payload);
+            
+            // Fire parallel TTS paths immediately after LLM text
+            (async () => {
+              const llmText = event.payload.text;
+              const [streamResult, tsResult] = await Promise.allSettled([
+                runTTSStreaming(llmText, session),
+                runTTSWithTimestamps(llmText, session),
+              ]);
+
+              // Stream audio chunks
+              if (streamResult.status === 'fulfilled' && streamResult.value) {
+                try {
+                  const reader = streamResult.value.getReader();
+                  let isFirst = true;
+                  while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                      send(ws, 'tts_chunk', { chunkBase64: null, isFirst: false, isFinal: true });
+                      break;
+                    }
+                    send(ws, 'tts_chunk', {
+                      chunkBase64: Buffer.from(value).toString('base64'),
+                      isFirst,
+                      isFinal: false
+                    });
+                    isFirst = false;
+                  }
+                } catch (streamErr) {
+                  console.warn('⚠️ TTS stream read failed:', streamErr.message);
+                }
+              }
+
+              // Send blendshapes from timestamp result
+              const blendshapes = (tsResult.status === 'fulfilled' && tsResult.value?.blendshapes?.length)
+                ? tsResult.value.blendshapes
+                : [];
+              if (blendshapes.length) {
+                send(ws, 'lipsync_blendshapes', { frames: blendshapes });
+              }
+
+              // Also send legacy tts_audio for fallback clients
+              if (tsResult.status === 'fulfilled' && tsResult.value?.audioBase64) {
+                send(ws, 'tts_audio', {
+                  audio: tsResult.value.audioBase64,
+                  duration: tsResult.value.duration,
+                  ttsTime: tsResult.value.duration ? 0 : null,
+                  isMock: false
+                });
+              }
+            })();
             break;
           case 'tts_audio':
             send(ws, 'tts_audio', event.payload);
