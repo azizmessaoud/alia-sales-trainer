@@ -1,7 +1,8 @@
 /**
  * ALIA 2.0 - NVIDIA NIM Integration
  * Free API access via build.nvidia.com
- * Replaces Ollama/Groq with lower latency + privacy option
+ * Primary: LLM generation (Llama 3.1-8B-Instruct)
+ * Embeddings: Replaced by HuggingFace (intfloat/multilingual-e5-small, 384-dim)
  */
 
 import OpenAI from 'openai';

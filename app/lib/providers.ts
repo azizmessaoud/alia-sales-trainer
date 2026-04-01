@@ -2,8 +2,9 @@
  * ALIA 2.0 - Provider Abstraction Layer
  * Supports configurable LLM and embedding providers
  * 
- * Primary: NVIDIA NIM (fastest, 1024-dim embeddings)
- * Fallback: Groq (fast LLM) or Ollama (local LLM/Embeddings)
+ * Primary LLM: NVIDIA NIM (fastest)
+ * Primary Embeddings: HuggingFace Inference API (intfloat/multilingual-e5-small, 384-dim)
+ * Fallback: Groq (LLM) or Ollama (local)
  */
 
 import { createClient } from '@supabase/supabase-js';
@@ -42,10 +43,15 @@ const config = {
   
   // Embedding
   embedding: {
-    provider: process.env.EMBEDDING_PROVIDER || 'nvidia', // 'nvidia' | 'ollama'
+    provider: process.env.EMBEDDING_PROVIDER || 'huggingface', // 'huggingface' | 'nvidia' | 'ollama'
+    huggingface: {
+      token: process.env.HF_TOKEN || '',
+      apiUrl: process.env.HF_INFERENCE_API_URL || 'https://api-inference.huggingface.co/models',
+      model: process.env.QDRANT_EMBEDDING_MODEL || 'intfloat/multilingual-e5-small', // 384-dim
+    },
     nvidia: {
       apiKey: process.env.NVIDIA_API_KEY || '',
-      model: NvidiaNIM.MODELS.EMBEDDING, // 'NV-Embed-QA' (1024-dim)
+      model: NvidiaNIM.MODELS.EMBEDDING, // 'NV-Embed-QA' (1024-dim) — deprecated, kept for legacy only
     },
     ollama: {
       model: 'nomic-embed-text', // Warning: 768-dim, only use for local testing if DB is adjusted
@@ -290,15 +296,59 @@ export async function generateText(
 export interface EmbeddingResponse {
   embedding: number[];
   elapsed_ms: number;
-  provider: 'nvidia' | 'ollama';
+  provider: 'huggingface' | 'nvidia' | 'ollama';
 }
 
 export async function generateEmbedding(text: string): Promise<EmbeddingResponse> {
   const start = Date.now();
 
-  // Try NVIDIA NIM first (1024-dim)
+  // HuggingFace Inference API — primary (384-dim, multilingual)
+  if (config.embedding.provider === 'huggingface' && config.embedding.huggingface.token) {
+    try {
+      // e5 models require 'query:' prefix for retrieval tasks
+      const prefixedText = `query: ${text}`;
+      
+      const response = await fetch(`${config.embedding.huggingface.apiUrl}/${config.embedding.huggingface.model}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.embedding.huggingface.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ inputs: prefixedText }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HF API error: ${response.status} ${response.statusText}`);
+      }
+
+      // HF Inference API returns array of arrays for single input
+      const result = (await response.json()) as unknown;
+      let embedding: number[] = [];
+      
+      if (Array.isArray(result) && result.length > 0 && Array.isArray(result[0])) {
+        embedding = result[0] as number[];
+      } else if (Array.isArray(result)) {
+        embedding = result as number[];
+      }
+
+      if (!embedding || !Array.isArray(embedding)) {
+        throw new Error('Invalid embedding response from HF');
+      }
+
+      return {
+        embedding,
+        elapsed_ms: Date.now() - start,
+        provider: 'huggingface',
+      };
+    } catch (error) {
+      console.warn('⚠️ HuggingFace embedding failed:', (error as Error).message);
+    }
+  }
+
+  // Fallback: Try NVIDIA NIM (1024-dim) — legacy support
   if (config.embedding.provider === 'nvidia' && config.embedding.nvidia.apiKey) {
     try {
+      console.warn('⚠️ Using NVIDIA NIM for embeddings (1024-dim) — dimension mismatch likely with 384-dim schema');
       const embedding = await NvidiaNIM.generateEmbedding(text);
       return {
         embedding,
@@ -306,11 +356,12 @@ export async function generateEmbedding(text: string): Promise<EmbeddingResponse
         provider: 'nvidia',
       };
     } catch (error) {
-      console.warn('⚠️ NVIDIA NIM embedding failed, falling back to Ollama (Note: dimension mismatch likely):', (error as Error).message);
+      console.warn('⚠️ NVIDIA NIM embedding failed:', (error as Error).message);
     }
   }
 
-  // Fallback to Ollama (768-dim)
+  // Final fallback: Ollama (768-dim)
+  console.warn('⚠️ Falling back to Ollama (768-dim) — dimension mismatch likely with 384-dim schema');
   const result = await ollama.embed(text);
   return {
     ...result,
@@ -324,6 +375,7 @@ export async function generateEmbedding(text: string): Promise<EmbeddingResponse
 
 export interface HealthStatus {
   status: 'ok' | 'degraded' | 'down';
+  huggingface: '✅' | '❌' | '➖';
   nvidia: '✅' | '❌' | '➖';
   groq: '✅' | '❌' | '➖';
   ollama: '✅' | '❌';
@@ -335,13 +387,19 @@ export interface HealthStatus {
 export async function checkHealth(): Promise<HealthStatus> {
   const results: HealthStatus = {
     status: 'ok',
+    huggingface: '➖',
     nvidia: '➖',
     groq: '➖',
     ollama: '❌',
     supabase: '❌',
     llmProvider: config.llm.provider,
-    embedModel: config.embedding.nvidia.model,
+    embedModel: config.embedding.huggingface.model,
   };
+  
+  // Check HuggingFace
+  if (config.embedding.provider === 'huggingface' && config.embedding.huggingface.token) {
+    results.huggingface = '✅';
+  }
   
   // Check NVIDIA
   if (config.llm.nvidia.apiKey) {

@@ -84,7 +84,8 @@ export interface MemorySearchResult {
 // =====================================================
 
 /**
- * Generate 1024-dimensional embedding using NVIDIA NIM (via providers)
+ * Generate 384-dimensional embedding using HuggingFace (intfloat/multilingual-e5-small)
+ * via providers abstraction layer. Supports EN/FR/AR/ES natively.
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
   const result = await providersGenerateEmbedding(text);
