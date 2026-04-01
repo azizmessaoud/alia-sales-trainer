@@ -23,6 +23,7 @@
     "dev:all": "concurrently \"npm run server\" \"npm run server:ws\" \"npm run dev\""
   },
   "dependencies": {
+    "@huggingface/inference": "^4.13.15",
     "@langchain/core": "^0.1.63",
     "@langchain/langgraph": "^0.0.12",
     "@langchain/openai": "^0.0.20",

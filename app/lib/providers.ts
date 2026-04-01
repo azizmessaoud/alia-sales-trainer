@@ -10,6 +10,7 @@
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import Groq from 'groq-sdk';
+import { HfInference } from '@huggingface/inference';
 import http from 'node:http';
 import { NvidiaNIM } from './nvidia-nim.server';
 
@@ -217,6 +218,9 @@ class OllamaClient {
 
 export const ollama = new OllamaClient(config.embedding.ollama.host);
 
+// HuggingFace Inference API client for embeddings (intfloat/multilingual-e5-small)
+const hf = new HfInference(process.env.HF_TOKEN || '');
+
 // =====================================================
 // Unified LLM Interface
 // =====================================================
@@ -302,34 +306,19 @@ export interface EmbeddingResponse {
 export async function generateEmbedding(text: string): Promise<EmbeddingResponse> {
   const start = Date.now();
 
-  // HuggingFace Inference API — primary (384-dim, multilingual)
+  // Primary: HuggingFace Inference API (384-dim intfloat/multilingual-e5-small)
   if (config.embedding.provider === 'huggingface' && config.embedding.huggingface.token) {
     try {
       // e5 models require 'query:' prefix for retrieval tasks
       const prefixedText = `query: ${text}`;
       
-      const response = await fetch(`${config.embedding.huggingface.apiUrl}/${config.embedding.huggingface.model}`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${config.embedding.huggingface.token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ inputs: prefixedText }),
-      });
+      const raw = (await hf.featureExtraction({
+        model: 'intfloat/multilingual-e5-small',
+        inputs: prefixedText,
+      })) as number[] | number[][];
 
-      if (!response.ok) {
-        throw new Error(`HF API error: ${response.status} ${response.statusText}`);
-      }
-
-      // HF Inference API returns array of arrays for single input
-      const result = (await response.json()) as unknown;
-      let embedding: number[] = [];
-      
-      if (Array.isArray(result) && result.length > 0 && Array.isArray(result[0])) {
-        embedding = result[0] as number[];
-      } else if (Array.isArray(result)) {
-        embedding = result as number[];
-      }
+      // featureExtraction returns number[] | number[][] depending on input count
+      const embedding = Array.isArray(raw[0]) ? (raw as number[][])[0] : (raw as number[]);
 
       if (!embedding || !Array.isArray(embedding)) {
         throw new Error('Invalid embedding response from HF');
