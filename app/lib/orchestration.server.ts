@@ -1,101 +1,449 @@
 /**
- * ALIA 2.0 Orchestration Layer
- * LangGraph-style state machine for complete conversation pipeline
- * Coordinates: Compliance → LLM → TTS → LipSync → Memory
+ * ALIA 2.0 Orchestration Layer (Refactored to LangGraph)
+ * Multi-agent state machine for complete conversation pipeline
+ * Coordinates: Compliance → Memory Retrieval → LLM → TTS → LipSync
  */
+import 'dotenv/config';
+import * as LangGraph from '@langchain/langgraph';
 
-import { generateResponse, generateLipSync } from './nvidia-nim.server';
+// Feature flags for Phase 3 optimization
+const useStreaming  = process.env.USE_ELEVENLABS_STREAMING === 'true';
+const useLipsync    = process.env.USE_ELEVENLABS_LIPSYNC   === 'true';
+
+// LangGraph runtime-safe bindings. Some installed versions export
+// `Annotation` while others do not export typings — provide a
+// runtime fallback (shim) to keep runtime behavior stable.
+const RealStateGraph = (LangGraph as any).StateGraph;
+const END: any = (LangGraph as any).END ?? Symbol('END');
+
+// If the library provides a real Annotation API, we'll use the library's
+// StateGraph. If not (Annotation missing), create a lightweight local
+// StateGraph implementation that runs nodes sequentially. This avoids
+// passing undefined annotation values into the upstream implementation.
+let StateGraph: any;
+const LangGraphAnnotation = (LangGraph as any).Annotation;
+if (RealStateGraph && LangGraphAnnotation) {
+  StateGraph = RealStateGraph;
+} else {
+  class LocalStateGraph {
+    private nodes = new Map<string, Function>();
+    private edges: Array<[string, string]> = [];
+    private entry: string | null = null;
+    constructor(_schema?: any) {}
+    addNode(name: string, fn: Function) { this.nodes.set(name, fn); return this; }
+    addEdge(a: string, b: string) { this.edges.push([a, b]); return this; }
+    setEntryPoint(name: string) { this.entry = name; return this; }
+    compile() {
+      const nodes = this.nodes;
+      const order = ['compliance','memory','llm','tts','lipsync'];
+      return {
+        invoke: async (initialState: any) => {
+          let state = { ...initialState };
+          for (const name of order) {
+            const node = nodes.get(name);
+            if (!node) continue;
+            const res = await node(state) || {};
+            state = { ...state, ...res };
+            if (state.stage === 'error') break;
+          }
+          return state;
+        }
+      };
+    }
+  }
+  StateGraph = LocalStateGraph;
+}
+
+// Annotation shim: give it a proper generic callable type so TypeScript
+// allows `Annotation<string>()` usages. Use the library export when
+// available, otherwise fall back to a minimal shim with `Root` passthrough.
+type AnnotationType = { <T = any>(_?: any): any; Root(obj: Record<string, any>): any };
+// Re-evaluate Annotation after choosing StateGraph implementation
+const LangAnnotationExport = (LangGraph as any).Annotation as AnnotationType | undefined;
+const AnnotationShim: AnnotationType = ((<T>(_?: any) => undefined) as unknown) as AnnotationType;
+AnnotationShim.Root = (obj: Record<string, any>) => obj;
+const Annotation: AnnotationType = LangAnnotationExport ?? AnnotationShim;
+import { NvidiaNIM } from './nvidia-nim.server.js';
+import { evaluateCompliance, buildComplianceInterruptionText } from './compliance-gate.server.js';
+import { MemoryOS, type RepProfile } from './memory-os.server.js';
+import { RAGPipeline } from './rag-pipeline.server.js';
+import { runTTS } from './tts.server.js';
+import { alignmentToVisemes, generateMockBlendshapes, runLipSync } from './lipsync.server.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { synthesizeSpeechNvidia, validateTTSResponse } from './tts-nvidia.server';
 
-function logPipelineTiming(args: {
-  sessionId: string;
-  stage: string;
-  durationMs: number;
-  error?: string | null;
-  meta?: Record<string, unknown>;
-}) {
-  const { sessionId, stage, durationMs, error = null, meta = {} } = args;
-  console.log(
-    JSON.stringify({
-      kind: 'pipeline_timing',
-      sessionId,
-      stage,
-      durationMs,
-      error,
-      timestamp: Date.now(),
-      ...meta,
-    })
-  );
+// Runtime fallback for streaming/timestamps (not available in Phase 1a)
+let runTTSStreaming: Function = async () => { throw new Error('runTTSStreaming not implemented'); };
+let runTTSWithTimestamps: Function = async () => { throw new Error('runTTSWithTimestamps not implemented'); };
+try {
+  const ttsModule = await import('./tts.server.js');
+  if (ttsModule.runTTSStreaming) runTTSStreaming = ttsModule.runTTSStreaming;
+  if (ttsModule.runTTSWithTimestamps) runTTSWithTimestamps = ttsModule.runTTSWithTimestamps;
+} catch (_) {
+  console.warn('⚠️ Streaming/timestamps TTS functions not available yet (Phase 1b)');
+}
+
+// =====================================================
+// Types & State Definition
+// =====================================================
+
+/**
+ * Update Event for progressive streaming
+ */
+export interface PipelineUpdate {
+  type: 'stage' | 'llm_text' | 'tts_audio' | 'lipsync_blendshapes' | 'compliance_violation' | 'error';
+  payload: any;
 }
 
 /**
- * Orchestration State - represents the conversation pipeline state
+ * Orchestration State - shared across all graph nodes
  */
 export interface OrchestrationState {
   // Input
   userMessage: string;
+  repId: string;
   sessionId: string;
   timestamp: number;
+  session?: { language?: string; [key: string]: any };
+  language?: string;
 
-  // Processing stages
-  stage: 'init' | 'compliance' | 'llm' | 'tts' | 'lipsync' | 'complete' | 'error';
-  error?: string;
-
+  // intermediate processing
+  isCompliant: boolean;
+  complianceReason?: string;
+  memories?: any[];
+  memoryContext?: string;
+  repProfile?: RepProfile | null;
+  
   // Output data
   llmResponse?: string;
-  audioBuffer?: Buffer;
+  audioBase64?: string;
   audioDuration?: number;
+  isMock?: boolean;
   blendshapes?: Array<{
     timestamp: number;
     blendshapes: Record<string, number>;
   }>;
 
-  // Metadata
-  metrics?: {
+  // Control & Metrics
+  stage: 'compliance' | 'memory' | 'llm' | 'tts' | 'lipsync' | 'complete' | 'error';
+  error?: string;
+  metrics: {
+    complianceTime: number;
+    memoryTime: number;
     llmTime: number;
     ttsTime: number;
     lipsyncTime: number;
     totalTime: number;
   };
+
+  // Callback for real-time updates (optional)
+  onUpdate?: (event: PipelineUpdate) => void;
 }
 
+// =====================================================
+// State Definition (using modern Annotation API)
+// =====================================================
+
+const StateAnnotation = Annotation.Root({
+  userMessage: Annotation<string>(),
+  repId: Annotation<string>(),
+  sessionId: Annotation<string>(),
+  timestamp: Annotation<number>(),
+  session: Annotation<any | undefined>(),
+  language: Annotation<string | undefined>(),
+  isCompliant: Annotation<boolean>(),
+  complianceReason: Annotation<string | undefined>(),
+  memories: Annotation<any[] | undefined>(),
+  memoryContext: Annotation<string | undefined>(),
+  repProfile: Annotation<RepProfile | null | undefined>(),
+  llmResponse: Annotation<string | undefined>(),
+  audioBase64: Annotation<string | undefined>(),
+  audioDuration: Annotation<number | undefined>(),
+  isMock: Annotation<boolean | undefined>(),
+  blendshapes: Annotation<any[] | undefined>(),
+  stage: Annotation<'compliance' | 'memory' | 'llm' | 'tts' | 'lipsync' | 'complete' | 'error'>(),
+  error: Annotation<string | undefined>(),
+  metrics: Annotation<{
+    complianceTime: number;
+    memoryTime: number;
+    llmTime: number;
+    ttsTime: number;
+    lipsyncTime: number;
+    totalTime: number;
+  }>({
+    reducer: (x: any, y: any) => ({ ...x, ...y }),
+    default: () => ({
+      complianceTime: 0,
+      memoryTime: 0,
+      llmTime: 0,
+      ttsTime: 0,
+      lipsyncTime: 0,
+      totalTime: 0,
+    }),
+  }),
+  onUpdate: Annotation<((event: PipelineUpdate) => void) | undefined>(),
+});
+
+// =====================================================
+// Graph Nodes (Agents)
+// =====================================================
+
 /**
- * Pipeline Response - what gets sent to the frontend
+ * NODE 1: Compliance Checker
  */
-export interface PipelineResponse {
-  success: boolean;
-  data?: {
-    text: string;
-    audio: string; // Base64-encoded audio
-    blendshapes: Array<{
-      timestamp: number;
-      blendshapes: Record<string, number>;
-    }>;
-    duration: number; // Audio duration in seconds
-    metadata: {
-      llmTime: number;
-      ttsTime: number;
-      lipsyncTime: number;
-      totalTime: number;
+const complianceNode = async (state: OrchestrationState): Promise<Partial<OrchestrationState>> => {
+  const start = Date.now();
+  try {
+    if (state.onUpdate) state.onUpdate({ type: 'stage', payload: { stage: 'compliance' } });
+    const result = await evaluateCompliance(state.userMessage);
+    
+    if (!result.is_compliant && state.onUpdate) {
+      state.onUpdate({ 
+        type: 'compliance_violation', 
+        payload: { 
+          message: buildComplianceInterruptionText(result.reason ?? ''),
+          compliance: result
+        } 
+      });
+    }
+
+    return {
+      isCompliant: result.is_compliant,
+      complianceReason: result.reason,
+      metrics: { ...state.metrics, complianceTime: Date.now() - start },
     };
-  };
-  error?: string;
-}
+  } catch (error) {
+    return {
+      error: `Compliance failed: ${error instanceof Error ? error.message : String(error)}`,
+      stage: 'error',
+    };
+  }
+};
 
 /**
- * Main orchestration function - complete pipeline
+ * NODE 2: Memory Retriever (RAG)
+ */
+const retrievalNode = async (state: OrchestrationState): Promise<Partial<OrchestrationState>> => {
+  const start = Date.now();
+  try {
+    if (state.onUpdate) state.onUpdate({ type: 'stage', payload: { stage: 'memory' } });
+    // Skip if non-compliant
+    if (!state.isCompliant) return {};
+
+    // Retrieve memories and profile in parallel
+    const [memories, profile] = await Promise.all([
+      MemoryOS.retrieveEpisodeMemories({
+        rep_id: state.repId,
+        query: state.userMessage,
+        limit: 3,
+      }),
+      MemoryOS.getRepProfile(state.repId)
+    ]);
+
+    // Derive memoryContext as a string summary from memories
+    const memoryContext = memories
+      ?.map((m: any) => m.memory_text || m.text || m.content || '')
+      .filter((t: string) => t.length > 0)
+      .join(' ')
+      || '';
+
+    return {
+      memories,
+      memoryContext,
+      repProfile: profile,
+      metrics: { ...state.metrics, memoryTime: Date.now() - start },
+    };
+  } catch (error) {
+    console.warn('⚠️ Memory retrieval failed, continuing without context:', error);
+    return {};
+  }
+};
+
+/**
+ * NODE 3: Strategic LLM (The "Brain")
+ */
+const llmNode = async (state: OrchestrationState): Promise<Partial<OrchestrationState>> => {
+  const start = Date.now();
+  try {
+    if (state.onUpdate) state.onUpdate({ type: 'stage', payload: { stage: 'llm' } });
+    let responseText: string;
+
+    if (!state.isCompliant) {
+      responseText = buildComplianceInterruptionText(state.complianceReason || '');
+    } else {
+      // Use RAG Pipeline to build a rich augmented prompt
+      // @ts-ignore - buildAugmentedPrompt expects MemorySearchResult but types might differ slightly
+      const systemPrompt = RAGPipeline.buildAugmentedPrompt(
+        state.userMessage,
+        state.memories || [],
+        state.repProfile || null
+      );
+
+      const messages: ChatCompletionMessageParam[] = [
+        { role: 'user', content: state.userMessage },
+      ];
+
+      const result = await NvidiaNIM.generateResponse(messages, {
+        system_prompt: systemPrompt,
+        max_tokens: 150,
+      });
+      responseText = result.text;
+    }
+
+    const duration = Date.now() - start;
+    if (state.onUpdate) state.onUpdate({ type: 'llm_text', payload: { text: responseText, llmTime: duration } });
+
+    return {
+      llmResponse: responseText,
+      metrics: { ...state.metrics, llmTime: duration },
+    };
+  } catch (error) {
+    return {
+      error: `LLM failed: ${error instanceof Error ? error.message : String(error)}`,
+      stage: 'error',
+    };
+  }
+};
+
+
+/**
+ * NODE 4: TTS Synthesis (with optional parallel streaming)
+ */
+const ttsNode = async (state: OrchestrationState): Promise<Partial<OrchestrationState>> => {
+  const start = Date.now();
+  try {
+    if (state.onUpdate) state.onUpdate({ type: 'stage', payload: { stage: 'tts' } });
+    if (!state.llmResponse) throw new Error('No LLM response for TTS');
+
+    const session = state.session;
+
+    // Phase 3: Promise.allSettled parallel path (if both flags enabled)
+    if (useStreaming && useLipsync) {
+      const [streamRes, tsRes] = await Promise.allSettled([
+        runTTSStreaming(state.llmResponse, session as any),
+        runTTSWithTimestamps(state.llmResponse, session as any),
+      ]);
+
+      // audioBase64 from tsRes (full audio) or fallback runTTS
+      let audioBase64: string;
+      let isMock = false;
+      let blendshapes: any[] = [];
+
+      if (tsRes.status === 'fulfilled' && tsRes.value?.audioBase64) {
+        audioBase64 = tsRes.value.audioBase64;
+        // blendshapes from alignment or mock fallback
+        if (tsRes.value.alignment) {
+          blendshapes = alignmentToVisemes(tsRes.value.alignment);
+        } else {
+          blendshapes = generateMockBlendshapes(audioBase64);
+          isMock = true;
+        }
+      } else {
+        // Fallback to sequential runTTS
+        const fallbackResult = await runTTS(state.llmResponse, session as any);
+        audioBase64 = fallbackResult.audioBase64;
+        isMock = fallbackResult.isMock;
+        blendshapes = generateMockBlendshapes(audioBase64);
+      }
+
+      const duration = Date.now() - start;
+      if (state.onUpdate) {
+        state.onUpdate({
+          type: 'tts_audio',
+          payload: { audio: audioBase64, duration, ttsTime: duration, isMock },
+        });
+      }
+
+      return {
+        audioBase64,
+        blendshapes,
+        isMock,
+        metrics: { ...state.metrics, ttsTime: duration },
+      };
+    } else {
+      // Compatibility path — existing tests pass through here
+      const ttsResult = await runTTS(state.llmResponse, session as any);
+      const { frames } = await runLipSync(ttsResult.audioBase64, state.language ?? 'en-US');
+
+      const duration = Date.now() - start;
+      if (state.onUpdate) {
+        state.onUpdate({
+          type: 'tts_audio',
+          payload: { audio: ttsResult.audioBase64, duration, ttsTime: duration, isMock: ttsResult.isMock },
+        });
+      }
+
+      return {
+        audioBase64: ttsResult.audioBase64,
+        audioDuration: ttsResult.duration,
+        blendshapes: frames,
+        isMock: ttsResult.isMock,
+        metrics: { ...state.metrics, ttsTime: duration },
+      };
+    }
+  } catch (error) {
+    return {
+      error: `TTS failed: ${error instanceof Error ? error.message : String(error)}`,
+      stage: 'error',
+    };
+  }
+};
+
+/**
+ * NODE 5: LipSync Generation (merged into ttsNode for Phase 3)
+ */
+const lipsyncNode = async (state: OrchestrationState): Promise<Partial<OrchestrationState>> => {
+  // In Phase 3, lipsync is handled within ttsNode via Promise.allSettled.
+  // This node is now a no-op compatibility placeholder.
+  return {};
+};
+
+// =====================================================
+// Graph Construction
+// =====================================================
+
+// Create the graph using Annotation.Root and the modern StateGraph API
+const workflow = (new (StateGraph as any)(StateAnnotation) as any)
+  .addNode('compliance', complianceNode)
+  .addNode('memory', retrievalNode)
+  .addNode('llm', llmNode)
+  .addNode('tts', ttsNode)
+  .addNode('lipsync', lipsyncNode)
+  .addEdge('compliance', 'memory')
+  .addEdge('memory', 'llm')
+  .addEdge('llm', 'tts')
+  .addEdge('tts', 'lipsync')
+  .addEdge('lipsync', END);
+
+// Compile the graph
+const graph = (workflow as any).compile();
+
+// =====================================================
+// Public Interface
+// =====================================================
+
+/**
+ * Main orchestration entry point
  */
 export async function orchestrateConversation(
   userMessage: string,
-  sessionId: string
+  repId: string = 'demo-rep',
+  sessionId: string = 'default',
+  session?: { language?: string; [key: string]: any },
+  onUpdate?: (event: PipelineUpdate) => void
 ): Promise<OrchestrationState> {
-  const state: OrchestrationState = {
+  const initialState: OrchestrationState = {
     userMessage,
+    repId,
     sessionId,
+    session,
+    language: session?.language ?? 'en-US',
+    onUpdate,
     timestamp: Date.now(),
-    stage: 'init',
+    isCompliant: true,
+    stage: 'compliance',
     metrics: {
+      complianceTime: 0,
+      memoryTime: 0,
       llmTime: 0,
       ttsTime: 0,
       lipsyncTime: 0,
@@ -104,203 +452,49 @@ export async function orchestrateConversation(
   };
 
   try {
-    console.log(`\n🎯 Starting orchestration pipeline...`);
-    console.log(`   Session: ${sessionId}`);
-    console.log(`   User: "${userMessage.substring(0, 60)}..."`);
-
-    // Stage 1: Compliance check (placeholder - implement based on your rules engine)
-    state.stage = 'compliance';
-    console.log(`\n✅ Stage 1: Compliance check passed`);
-
-    // Stage 2: LLM Response Generation
-    state.stage = 'llm';
-    const llmStart = Date.now();
-    const messages: ChatCompletionMessageParam[] = [
-      { role: 'user', content: userMessage },
-    ];
-    const llmResult = await generateResponse(messages, {
-      max_tokens: 150,
-      system_prompt: 'You are ALIA, a medical sales training coach. Keep responses to 1-2 concise sentences. Be direct and actionable.',
-    });
-    state.llmResponse = llmResult.text;
-    if (!state.llmResponse) {
-      throw new Error('LLM failed to generate response');
-    }
-    state.metrics!.llmTime = Date.now() - llmStart;
-    logPipelineTiming({
-      sessionId,
-      stage: 'llm',
-      durationMs: state.metrics!.llmTime,
-    });
-    console.log(`\u2705 Stage 2: LLM response generated [${state.metrics!.llmTime}ms]`);
-    console.log(`   Response: "${state.llmResponse.substring(0, 80)}..."`);
-
-    // Stage 3: Text-to-Speech Synthesis (8s timeout for speed)
-    state.stage = 'tts';
-    const ttsStart = Date.now();
-    const ttsResponse = await synthesizeSpeechNvidia(state.llmResponse, 'en-US-JennyNeural', 8000);
-
-    if (!validateTTSResponse(ttsResponse)) {
-      throw new Error('Invalid TTS response');
-    }
-
-    state.audioBuffer = ttsResponse.audio;
-    state.audioDuration = ttsResponse.duration;
-    state.metrics!.ttsTime = Date.now() - ttsStart;
-    logPipelineTiming({
-      sessionId,
-      stage: 'tts',
-      durationMs: state.metrics!.ttsTime,
-      meta: { audioDuration: state.audioDuration },
-    });
-    console.log(`\u2705 Stage 3: Audio synthesized [${state.metrics!.ttsTime}ms]`);
-    console.log(`   Audio: ${state.audioBuffer.length} bytes, ${state.audioDuration.toFixed(2)}s`);
-
-    // Stage 4: Audio-to-Blendshape with 2s timeout guard
-    state.stage = 'lipsync';
-    const lipsyncStart = Date.now();
-    try {
-      state.blendshapes = await Promise.race([
-        generateLipSync(state.audioBuffer),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('LipSync timeout: 2000ms exceeded')), 2000)
-        ),
-      ]);
-    } catch (lsErr) {
-      const errorMessage = lsErr instanceof Error ? lsErr.message : String(lsErr);
-      console.error(`❌ LipSync failed: ${errorMessage}`);
-      
-      // If we have audio data, generate minimal blendshapes as fallback
-      if (state.audioBuffer) {
-        console.log('⚠️ Generating minimal blendshapes as fallback');
-        state.blendshapes = [];
-        const duration = state.audioDuration || 0;
-        const frameCount = Math.floor(duration * 30);
-        
-        for (let i = 0; i < frameCount; i++) {
-          state.blendshapes.push({
-            timestamp: i * (1000 / 30),
-            blendshapes: {
-              jawOpen: 0,
-              mouthSmileLeft: 0,
-              mouthSmileRight: 0,
-              mouthFunnel: 0,
-              eyeBlinkLeft: 0,
-              eyeBlinkRight: 0,
-              eyeWideLeft: 0,
-              eyeWideRight: 0
-            }
-          });
+    const result = await graph.invoke(initialState);
+    result.metrics.totalTime = Date.now() - result.timestamp;
+    result.stage = 'complete';
+    
+    // Send final completion message if callback exists
+    if (onUpdate) {
+      onUpdate({
+        type: 'stage',
+        payload: { 
+          stage: 'complete',
+          totalTime: result.metrics.totalTime,
+          breakdown: result.metrics
         }
-      } else {
-        state.blendshapes = [];
-      }
+      });
     }
-    state.metrics!.lipsyncTime = Date.now() - lipsyncStart;
-    logPipelineTiming({
-      sessionId,
-      stage: 'lipsync',
-      durationMs: state.metrics!.lipsyncTime,
-      meta: { frameCount: state.blendshapes.length },
-    });
-    console.log(`✅ Stage 4: Blendshapes generated [${state.metrics!.lipsyncTime}ms]`);
-    console.log(`   Frames: ${state.blendshapes.length} @ 30fps`);
 
-    // Stage 5: Complete
-    state.stage = 'complete';
-    state.metrics!.totalTime = Date.now() - state.timestamp;
-    logPipelineTiming({
-      sessionId,
-      stage: 'pipeline_total',
-      durationMs: state.metrics!.totalTime,
-      meta: {
-        llmTime: state.metrics!.llmTime,
-        ttsTime: state.metrics!.ttsTime,
-        lipsyncTime: state.metrics!.lipsyncTime,
-      },
-    });
-    console.log(`\n🎉 Orchestration complete [${state.metrics!.totalTime}ms total]`);
-    console.log(`   Pipeline: LLM(${state.metrics!.llmTime}ms) → TTS(${state.metrics!.ttsTime}ms) → LipSync(${state.metrics!.lipsyncTime}ms)`);
-
-    return state;
+    return result;
   } catch (error) {
-    state.stage = 'error';
-    state.error = error instanceof Error ? error.message : String(error);
-    logPipelineTiming({
-      sessionId,
-      stage: 'pipeline_error',
-      durationMs: Date.now() - state.timestamp,
-      error: state.error,
-    });
-    console.error(`❌ Orchestration failed: ${state.error}`);
-    return state;
+    console.error('❌ LangGraph Orchestration Error:', error);
+    return {
+      ...initialState,
+      stage: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
 /**
- * Convert orchestration state to HTTP response
+ * Response Formatter (matches existing API expectations)
  */
-export function stateToResponse(state: OrchestrationState): PipelineResponse {
-  if (state.stage === 'error') {
-    return {
-      success: false,
-      error: state.error || 'Unknown error',
-    };
-  }
-
-  if (!state.llmResponse || !state.audioBuffer || !state.blendshapes) {
-    return {
-      success: false,
-      error: 'Pipeline incomplete',
-    };
+export function stateToResponse(state: OrchestrationState) {
+  if (state.error) {
+    return { success: false, error: state.error };
   }
 
   return {
     success: true,
     data: {
       text: state.llmResponse,
-      audio: state.audioBuffer.toString('base64'),
+      audio: state.audioBase64,
       blendshapes: state.blendshapes,
-      duration: state.audioDuration || 0,
-      metadata: {
-        llmTime: state.metrics?.llmTime || 0,
-        ttsTime: state.metrics?.ttsTime || 0,
-        lipsyncTime: state.metrics?.lipsyncTime || 0,
-        totalTime: state.metrics?.totalTime || 0,
-      },
+      duration: state.audioDuration,
+      metadata: state.metrics,
     },
   };
-}
-
-/**
- * Metrics Logger - for performance tracking
- */
-export class PipelineMetrics {
-  private metrics: Map<string, number> = new Map();
-
-  record(stage: string, duration: number) {
-    this.metrics.set(stage, duration);
-  }
-
-  getMetric(stage: string): number | undefined {
-    return this.metrics.get(stage);
-  }
-
-  getAll(): Record<string, number> {
-    return Object.fromEntries(this.metrics);
-  }
-
-  getTotalTime(): number {
-    return Array.from(this.metrics.values()).reduce((a, b) => a + b, 0);
-  }
-
-  log() {
-    const all = this.getAll();
-    console.log('📊 Pipeline Metrics:');
-    Object.entries(all).forEach(([stage, duration]) => {
-      const percent = ((duration / this.getTotalTime()) * 100).toFixed(1);
-      console.log(`   ${stage}: ${duration}ms (${percent}%)`);
-    });
-    console.log(`   Total: ${this.getTotalTime()}ms`);
-  }
 }
