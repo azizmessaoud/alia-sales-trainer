@@ -22,23 +22,13 @@
  *   { type: 'error',                payload: { message } }
  */
 
-import { WebSocketServer } from 'ws';
-import { createServer } from 'http';
-import OpenAI from 'openai';
+// ─────────────────────────────────────────────────
+// Load .env FIRST (before imports)
+// ─────────────────────────────────────────────────
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import crypto from 'node:crypto';
-import {
-  evaluateCompliance,
-  buildComplianceInterruptionText,
-} from './app/lib/compliance-gate.server.js';
-import { runTTS } from './app/lib/tts.server.js';
-import { runLipSync, buildVisemeTimeline } from './app/lib/lipsync.server.js';
 
-// ─────────────────────────────────────────────────
-// Load .env
-// ─────────────────────────────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.join(__dirname, '.env');
 
@@ -58,6 +48,14 @@ if (fs.existsSync(envPath)) {
   });
   console.log('✅ .env loaded');
 }
+
+import { WebSocketServer } from 'ws';
+import { createServer } from 'http';
+import OpenAI from 'openai';
+import crypto from 'node:crypto';
+import {
+  orchestrateConversation,
+} from './app/lib/orchestration.server.ts';
 
 // ─────────────────────────────────────────────────
 // Configuration
@@ -149,6 +147,8 @@ async function handleMessage(ws, msg) {
       return handleChat(ws, msg.payload || {});
     case 'interrupt':
       return handleInterrupt(ws);
+    case 'debug_lipsync':
+      return handleDebugLipSync(ws, msg.payload || {});
     default:
       send(ws, 'error', { message: `Unknown type: ${msg.type}` });
   }
@@ -219,7 +219,6 @@ function handleInterrupt(ws) {
 //   4. pipeline_complete
 // ─────────────────────────────────────────────────
 async function handleChat(ws, { message }) {
-  const wsReceiveStart = Date.now();
   if (!message?.trim())
     return send(ws, 'error', { message: 'Empty message' });
 
@@ -244,184 +243,57 @@ async function handleChat(ws, { message }) {
     timestamp: Date.now(),
   });
   send(ws, 'message_received', { message_id: crypto.randomUUID() });
-  logPipelineTiming({
-    sessionId: session_id,
-    stage: 'ws_receive',
-    durationMs: Date.now() - wsReceiveStart,
-  });
-
-  const pipelineStart = Date.now();
 
   try {
-    // ─── Stage 1: Compliance ───────────────────
-    if (ac.signal.aborted) return;
-    send(ws, 'stage', { stage: 'compliance' });
-
-    const complianceStart = Date.now();
-    const compliance = evaluateCompliance({
+    // Run LangGraph Orchestration
+    await orchestrateConversation(
       message,
-      sessionId: session_id,
-      history: session.messages,
-    });
-    const complianceTime = Date.now() - complianceStart;
-    session.metrics.compliance = compliance.score;
-    logPipelineTiming({
-      sessionId: session_id,
-      stage: 'compliance',
-      durationMs: complianceTime,
-      meta: {
-        allowed: compliance.allowed,
-        score: compliance.score,
-        severity: compliance.severity,
-        matchedRules: compliance.matchedRules,
-      },
-    });
+      session.rep_id || 'demo-rep',
+      session_id,
+      (event) => {
+        if (ac.signal.aborted) return;
 
-    if (!compliance.allowed) {
-      const complianceMessage = buildComplianceInterruptionText(compliance);
-      session.messages.push({
-        role: 'assistant',
-        content: complianceMessage,
-        timestamp: Date.now(),
-      });
+        // Debug: log orchestration events to help diagnose missing stages
+        try {
+          const evt = typeof event === 'string' ? event : JSON.stringify(event, (k, v) => (k === 'audio' ? '[binary]' : v));
+          console.log('[WS] Orchestration event:', evt.substring ? evt.substring(0, 1000) : evt);
+        } catch (e) {
+          console.log('[WS] Orchestration event (unserializable)');
+        }
 
-      send(ws, 'compliance_violation', {
-        message: complianceMessage,
-        compliance,
-      });
-
-      const totalTime = Date.now() - pipelineStart;
-      send(ws, 'pipeline_complete', {
-        totalTime,
-        complianceScore: compliance.score,
-        breakdown: {
-          complianceTime,
-          llmTime: 0,
-          ttsTime: 0,
-          lipsyncTime: 0,
-        },
-      });
-      logPipelineTiming({
-        sessionId: session_id,
-        stage: 'pipeline_total',
-        durationMs: totalTime,
-        meta: {
-          blockedByCompliance: true,
-          complianceTime,
-        },
-      });
-      console.warn(
-        `  ⚠️ Compliance blocked [${complianceTime}ms]: ${compliance.reason || 'rule match'}`
-      );
-      return;
-    }
-
-    // ─── Stage 2: LLM ──────────────────────────
-    if (ac.signal.aborted) return;
-    send(ws, 'stage', { stage: 'llm' });
-
-    const llmStart = Date.now();
-    const llmText = await runLLM(session.messages);
-    const llmTime = Date.now() - llmStart;
-    logPipelineTiming({
-      sessionId: session_id,
-      stage: 'llm',
-      durationMs: llmTime,
-    });
-
-    if (ac.signal.aborted) return;
-    session.messages.push({
-      role: 'assistant',
-      content: llmText,
-      timestamp: Date.now(),
-    });
-    send(ws, 'llm_text', { text: llmText, llmTime });
-    console.log(
-      `  ✅ LLM [${llmTime}ms]: "${llmText.substring(0, 60)}..."`
-    );
-
-    // ─── Stage 3: TTS ──────────────────────────
-    if (ac.signal.aborted) return;
-    send(ws, 'stage', { stage: 'tts' });
-
-    const ttsStart = Date.now();
-    const { audioBase64, duration, isMock } = await runTTS(llmText, session, {
-      nvidiaApiKey: NVIDIA_API_KEY,
-      nvidiaBaseUrl: NVIDIA_BASE_URL,
-      nvidiaModel: 'nvidia/fastpitch-hifigan',
-    });
-    const ttsTime = Date.now() - ttsStart;
-    logPipelineTiming({
-      sessionId: session_id,
-      stage: 'tts',
-      durationMs: ttsTime,
-      meta: { isMock: Boolean(isMock) },
-    });
-
-    if (ac.signal.aborted) return;
-    send(ws, 'tts_audio', { audio: audioBase64, duration, ttsTime, isMock: isMock || false });
-    console.log(
-      `  ✅ TTS [${ttsTime}ms]: ${duration.toFixed(2)}s audio`
-    );
-
-    // ─── Stage 4: LipSync ──────────────────────
-    if (ac.signal.aborted) return;
-    send(ws, 'stage', { stage: 'lipsync' });
-
-    const lsStart = Date.now();
-    const { frames: blendshapes, isMock: lipsyncIsMock } = await runLipSync(
-      audioBase64,
-      session.language || 'en-US',
-      { nvidiaApiKey: NVIDIA_API_KEY }
-    );
-    const lipsyncTime = Date.now() - lsStart;
-    logPipelineTiming({
-      sessionId: session_id,
-      stage: 'lipsync',
-      durationMs: lipsyncTime,
-      meta: { isMock: Boolean(lipsyncIsMock) },
-    });
-    const jawVals = blendshapes.map(f => f.blendshapes.jawOpen ?? 0);
-    const jawMin = Math.min(...jawVals).toFixed(3);
-    const jawMax = Math.max(...jawVals).toFixed(3);
-    const timeline = buildVisemeTimeline(blendshapes);
-
-    if (ac.signal.aborted) return;
-    send(ws, 'lipsync_blendshapes', { blendshapes, timeline, lipsyncTime, isMock: lipsyncIsMock });
-    console.log(
-      `  ✅ LipSync [${lipsyncTime}ms]: ${blendshapes.length} frames | jawOpen=[${jawMin}..${jawMax}]${lipsyncIsMock ? ' (mock)' : ''}`
-    );
-
-    // ─── Done ──────────────────────────────────
-    const totalTime = Date.now() - pipelineStart;
-    const wsSendStart = Date.now();
-    send(ws, 'pipeline_complete', {
-      totalTime,
-      complianceScore: session.metrics.compliance,
-      breakdown: { llmTime, ttsTime, lipsyncTime },
-    });
-    logPipelineTiming({
-      sessionId: session_id,
-      stage: 'ws_send',
-      durationMs: Date.now() - wsSendStart,
-    });
-    logPipelineTiming({
-      sessionId: session_id,
-      stage: 'pipeline_total',
-      durationMs: totalTime,
-      meta: { llmTime, ttsTime, lipsyncTime },
-    });
-    console.log(
-      `🎉 Pipeline [${totalTime}ms] = LLM(${llmTime}) + TTS(${ttsTime}) + LS(${lipsyncTime})`
+        // Map LangGraph events to WebSocket protocol
+        switch (event.type) {
+          case 'stage':
+            if (event.payload.stage === 'complete') {
+              send(ws, 'pipeline_complete', {
+                totalTime: event.payload.totalTime,
+                breakdown: event.payload.breakdown
+              });
+            } else {
+              send(ws, 'stage', event.payload);
+            }
+            break;
+          case 'llm_text':
+            session.messages.push({ role: 'assistant', content: event.payload.text, timestamp: Date.now() });
+            send(ws, 'llm_text', event.payload);
+            break;
+          case 'tts_audio':
+            send(ws, 'tts_audio', event.payload);
+            break;
+          case 'lipsync_blendshapes':
+            send(ws, 'lipsync_blendshapes', event.payload);
+            break;
+          case 'compliance_violation':
+            send(ws, 'compliance_violation', event.payload);
+            break;
+          case 'error':
+            send(ws, 'error', event.payload);
+            break;
+        }
+      }
     );
   } catch (err) {
     if (ac.signal.aborted) return;
-    logPipelineTiming({
-      sessionId: session_id,
-      stage: 'pipeline_error',
-      durationMs: Date.now() - pipelineStart,
-      error: err?.message || String(err),
-    });
     console.error('[WS] Pipeline error:', err.message || err);
     send(ws, 'error', { message: err.message || 'Pipeline failed' });
   } finally {
@@ -432,6 +304,25 @@ async function handleChat(ws, { message }) {
 // ═════════════════════════════════════════════════
 // Pipeline Stage Implementations
 // ═════════════════════════════════════════════════
+
+// Debug helper: send mock lipsync frames to a client
+function generateMockFrames(count = 60, durationMs = 2000) {
+  const frames = [];
+  const interval = Math.max(10, Math.floor(durationMs / Math.max(1, count)));
+  for (let i = 0; i < count; i++) {
+    const t = i / Math.max(1, count - 1);
+    const jaw = Math.max(0, Math.min(1, 0.5 + Math.sin(t * Math.PI * 2) * 0.3));
+    frames.push({ timestamp: Math.round(i * interval), blendshapes: { jawOpen: jaw } });
+  }
+  return frames;
+}
+
+function handleDebugLipSync(ws, { frames = 60, duration = 2000 } = {}) {
+  // Send a small mock sequence so client can test animator mapping
+  const payload = { blendshapes: generateMockFrames(frames, duration), lipsyncTime: 5, timeline: null, isMock: true };
+  send(ws, 'lipsync_blendshapes', payload);
+  return send(ws, 'pipeline_complete', { totalTime: duration, breakdown: { llmTime: 0, ttsTime: 0, lipsyncTime: 5 } });
+}
 
 async function runLLM(conversationMessages) {
   const systemPrompt =

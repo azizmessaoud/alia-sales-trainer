@@ -31,7 +31,7 @@ Check the existing codebase for current state:
 - [`server-websocket.js`](../../../server-websocket.js) — WebSocket gateway + pipeline
 - [`app/lib/orchestration.server.ts`](../../../app/lib/orchestration.server.ts) — Pipeline stages
 - [`app/lib/nvidia-nim.server.ts`](../../../app/lib/nvidia-nim.server.ts) — LLM provider
-- [`app/lib/tts.server.ts`](../../../app/lib/tts.server.ts) — TTS provider
+- [`app/lib/tts.server.ts`](../../../app/lib/tts.server.js) — TTS provider (file missing) 
 - [`app/lib/memory-os.server.ts`](../../../app/lib/memory-os.server.ts) — Knowledge/memory layer
 - [`.env`](../../../.env) — Active provider keys (present = likely active)
 

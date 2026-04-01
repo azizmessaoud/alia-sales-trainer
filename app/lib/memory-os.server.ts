@@ -1,4 +1,3 @@
-
 /**
  * ALIA 2.0 - Memory OS (Layer 1)
  * TeleMem-inspired 3-tier memory hierarchy
@@ -8,8 +7,11 @@
  * Tier 3: Rep Profile (long-term archetype)
  */
 
-import { createClient } from '@supabase/supabase-js';
-import OpenAI from 'openai';
+import {
+  supabase,
+  generateEmbedding as providersGenerateEmbedding,
+  generateText,
+} from './providers.js';
 
 // =====================================================
 // Types
@@ -78,41 +80,15 @@ export interface MemorySearchResult {
 }
 
 // =====================================================
-// Initialize Clients
-// =====================================================
-
-const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const openaiApiKey = process.env.OPENAI_API_KEY!;
-
-if (!supabaseUrl || !supabaseServiceKey) {
-  throw new Error('Missing Supabase credentials in .env');
-}
-
-if (!openaiApiKey) {
-  throw new Error('Missing OpenAI API key in .env');
-}
-
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
-const openai = new OpenAI({ apiKey: openaiApiKey });
-
-// =====================================================
-// OpenAI Embedding Generation
+// Embedding Generation
 // =====================================================
 
 /**
- * Generate 1536-dimensional embedding using OpenAI text-embedding-3-small
+ * Generate 1024-dimensional embedding using NVIDIA NIM (via providers)
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
-  const embeddingModel = process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
-  
-  const response = await openai.embeddings.create({
-    model: embeddingModel,
-    input: text,
-    encoding_format: 'float',
-  });
-
-  return response.data[0].embedding;
+  const result = await providersGenerateEmbedding(text);
+  return result.embedding;
 }
 
 // =====================================================
@@ -341,7 +317,7 @@ ${feedback ? `Feedback: ${feedback}` : ''}`;
 }
 
 /**
- * Extract structured learning summary using GPT-4
+ * Extract structured learning summary using LLM
  */
 async function extractLearningSummary(
   transcript: string,
@@ -363,15 +339,12 @@ Return JSON format:
   "recommended_focus": "specific area to practice"
 }`;
 
-    const completion = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4-turbo',
-      messages: [{ role: 'user', content: prompt }],
+    const completion = await generateText(prompt, {
       temperature: 0.2,
-      max_tokens: 500,
-      response_format: { type: 'json_object' },
+      maxTokens: 500,
     });
 
-    const result = JSON.parse(completion.choices[0].message.content || '{}');
+    const result = JSON.parse(completion.text || '{}');
     return result;
   } catch (error) {
     console.error('Error extracting learning summary:', error);

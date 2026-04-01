@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS episode_memories (
   rep_id UUID NOT NULL REFERENCES reps(id) ON DELETE CASCADE,
   session_id UUID NOT NULL REFERENCES training_sessions(id) ON DELETE CASCADE,
   episode_text TEXT NOT NULL,
-  episode_embedding VECTOR(768) NOT NULL,
+  episode_embedding VECTOR(1024) NOT NULL,
   learning_summary JSONB NOT NULL,
   accuracy FLOAT,
   compliance FLOAT,

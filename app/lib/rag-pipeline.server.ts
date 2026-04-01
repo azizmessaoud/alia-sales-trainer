@@ -168,7 +168,7 @@ export async function retrieveRepProfile(rep_id: string): Promise<RepProfile | n
 /**
  * Build augmented prompt with retrieved context
  */
-function buildAugmentedPrompt(
+export function buildAugmentedPrompt(
   query: string,
   memories: MemorySearchResult[],
   profile: RepProfile | null
@@ -362,6 +362,7 @@ export const RAGPipeline = {
   retrieveMemories,
   retrieveConsolidatedMemories,
   retrieveRepProfile,
+  buildAugmentedPrompt,
   executeRAG,
   storeEpisodeMemory,
 };

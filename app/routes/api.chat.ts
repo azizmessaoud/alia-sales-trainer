@@ -52,7 +52,7 @@ export const action: ActionFunction = async ({ request }) => {
 
     // Execute complete orchestration pipeline
     const session = sessionId || crypto.randomUUID();
-    const state = await orchestrateConversation(message, session);
+    const state = await orchestrateConversation(message, 'demo-rep', session);
 
     // Convert state to HTTP response
     const response = stateToResponse(state);

@@ -71,6 +71,8 @@ export interface ALIAWebSocket {
   status: ConnectionStatus;
   /** Current pipeline stage (null when idle) */
   currentStage: string | null;
+  /** Send a raw message (type + payload) */
+  sendRaw: (type: string, payload?: any) => void;
 }
 
 // ─── Hook ───────────────────────────────────────
@@ -259,6 +261,10 @@ export function useALIAWebSocket(
     }
   }, []);
 
+  const sendRaw = useCallback((type: string, payload: any = {}) => {
+    sendJSON(type, payload);
+  }, [sendJSON]);
+
   const sendChat = useCallback(
     (message: string) => sendJSON('chat', { message }),
     [sendJSON]
@@ -292,5 +298,6 @@ export function useALIAWebSocket(
     endSession,
     status,
     currentStage,
+    sendRaw,
   };
 }

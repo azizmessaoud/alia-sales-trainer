@@ -93,7 +93,7 @@ export function buildVisemeTimeline(frames) {
   return { visemes, vtimes, vdurations };
 }
 
-function generateMockBlendshapes(audioBase64) {
+export function generateMockBlendshapes(audioBase64) {
   const rawBytes = (audioBase64.length * 3) / 4;
   const durationMs = (rawBytes / (16000 * 2)) * 1000;
   const cappedMs = Math.min(durationMs, 15000);
@@ -311,4 +311,82 @@ export async function runLipSync(audioBase64, language = 'en-US', options = {}) 
   }
 
   return { frames: generateMockBlendshapes(audioBase64), isMock: true };
+}
+
+const CHAR_TO_VISEME = {
+  // Silence
+  ' ': 'viseme_sil', ',': 'viseme_sil', '.': 'viseme_sil',
+  '!': 'viseme_sil', '?': 'viseme_sil', '\n': 'viseme_sil',
+  // Bilabials
+  'p': 'viseme_PP', 'b': 'viseme_PP', 'm': 'viseme_PP',
+  // Labiodentals
+  'f': 'viseme_FF', 'v': 'viseme_FF',
+  // Dental fricatives
+  't': 'viseme_TH', 'd': 'viseme_TH',
+  // Sibilants
+  's': 'viseme_SS', 'z': 'viseme_SS',
+  // Alveolar nasals
+  'n': 'viseme_nn',
+  // Velars
+  'k': 'viseme_kk', 'g': 'viseme_kk', 'c': 'viseme_kk', 'q': 'viseme_kk',
+  // Affricates
+  'j': 'viseme_CH', 'y': 'viseme_CH',
+  // Rhotic
+  'r': 'viseme_RR',
+  // Open vowel
+  'a': 'viseme_aa',
+  // Mid vowels
+  'e': 'viseme_E', 'i': 'viseme_I',
+  // Round vowels
+  'o': 'viseme_O', 'u': 'viseme_U',
+  // Arabic pharyngeals/uvulars
+  'ح': 'viseme_FF', 'خ': 'viseme_FF', 'ه': 'viseme_FF',
+  'ق': 'viseme_kk', 'ك': 'viseme_kk', 'غ': 'viseme_kk',
+  'ر': 'viseme_RR',
+  'ع': 'viseme_aa', 'ا': 'viseme_aa', 'أ': 'viseme_aa',
+  'م': 'viseme_PP', 'ب': 'viseme_PP',
+  'و': 'viseme_U', 'ي': 'viseme_I',
+  // French nasal vowels
+  'ç': 'viseme_SS', 'œ': 'viseme_O', 'é': 'viseme_E',
+  'è': 'viseme_E', 'ê': 'viseme_E', 'ù': 'viseme_U',
+};
+
+const VISEME_JAW = {
+  'viseme_aa': 0.55, 'viseme_O': 0.45, 'viseme_E': 0.30,
+  'viseme_I': 0.25, 'viseme_U': 0.20, 'viseme_PP': 0.05,
+  'viseme_FF': 0.10, 'viseme_TH': 0.15, 'viseme_DD': 0.15,
+  'viseme_kk': 0.10, 'viseme_CH': 0.15, 'viseme_SS': 0.10,
+  'viseme_nn': 0.08, 'viseme_RR': 0.18, 'viseme_sil': 0.0,
+};
+
+const FPS_MS = 1000 / 30;
+
+/**
+ * Convert ElevenLabs character alignment to 30fps RPM viseme frames.
+ * alignment = { characters[], character_start_times_seconds[], character_end_times_seconds[] }
+ */
+export function alignmentToVisemes(alignment) {
+  const frames = [];
+
+  for (let i = 0; i < alignment.characters.length; i++) {
+    const char = alignment.characters[i].toLowerCase();
+    const startMs = alignment.character_start_times_seconds[i] * 1000;
+    const endMs = alignment.character_end_times_seconds[i] * 1000;
+    const viseme = CHAR_TO_VISEME[char] ?? 'viseme_sil';
+    const jawVal = VISEME_JAW[viseme] ?? 0.0;
+
+    for (let t = startMs; t < endMs; t += FPS_MS) {
+      frames.push({
+        timestamp: Math.round(t),
+        blendshapes: {
+          jawOpen: jawVal,
+          [viseme]: 0.95,
+        },
+      });
+    }
+  }
+
+  const seen = new Map();
+  for (const f of frames) seen.set(f.timestamp, f);
+  return [...seen.values()].sort((a, b) => a.timestamp - b.timestamp);
 }

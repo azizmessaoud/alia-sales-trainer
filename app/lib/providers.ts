@@ -2,13 +2,15 @@
  * ALIA 2.0 - Provider Abstraction Layer
  * Supports configurable LLM and embedding providers
  * 
- * LLM: Groq (fast) or Ollama (local)
- * Embeddings: Ollama (local, zero-cost)
+ * Primary: NVIDIA NIM (fastest, 1024-dim embeddings)
+ * Fallback: Groq (fast LLM) or Ollama (local LLM/Embeddings)
  */
 
 import { createClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import Groq from 'groq-sdk';
 import http from 'node:http';
+import { NvidiaNIM } from './nvidia-nim.server';
 
 // =====================================================
 // Environment Configuration
@@ -23,7 +25,11 @@ const config = {
   
   // LLM Providers
   llm: {
-    provider: process.env.LLM_PROVIDER || 'groq', // 'groq' | 'ollama'
+    provider: process.env.LLM_PROVIDER || 'nvidia', // 'nvidia' | 'groq' | 'ollama'
+    nvidia: {
+      apiKey: process.env.NVIDIA_API_KEY || '',
+      model: NvidiaNIM.MODELS.LLM,
+    },
     groq: {
       apiKey: process.env.GROQ_API_KEY || '',
       model: process.env.GROQ_MODEL || 'llama-3.1-70b-versatile',
@@ -34,17 +40,17 @@ const config = {
     },
   },
   
-  // Embedding (always Ollama for local/zero-cost)
+  // Embedding
   embedding: {
-    model: 'nomic-embed-text',
-    dimensions: 768,
-    host: process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
-  },
-  
-  // Azure TTS
-  tts: {
-    key: process.env.AZURE_SPEECH_KEY || '',
-    region: process.env.AZURE_SPEECH_REGION || 'eastus',
+    provider: process.env.EMBEDDING_PROVIDER || 'nvidia', // 'nvidia' | 'ollama'
+    nvidia: {
+      apiKey: process.env.NVIDIA_API_KEY || '',
+      model: NvidiaNIM.MODELS.EMBEDDING, // 'NV-Embed-QA' (1024-dim)
+    },
+    ollama: {
+      model: 'nomic-embed-text', // Warning: 768-dim, only use for local testing if DB is adjusted
+      host: process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
+    },
   },
 };
 
@@ -52,10 +58,35 @@ const config = {
 // Supabase Client
 // =====================================================
 
-export const supabase = createClient(
-  config.supabase.url,
-  config.supabase.serviceKey
-);
+let supabase: SupabaseClient | any;
+
+try {
+  if (!config.supabase.url || !config.supabase.serviceKey) {
+    throw new Error('Missing Supabase credentials');
+  }
+  supabase = createClient(config.supabase.url, config.supabase.serviceKey);
+  console.log('✅ Supabase client connected');
+} catch (err) {
+  console.warn('⚠️ Supabase not configured or failed to connect — using mock client. Real DB operations will fail.');
+  // Mock client that returns empty arrays or nulls to prevent crashes
+  supabase = {
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          single: async () => ({ data: null, error: null }),
+          maybeSingle: async () => ({ data: null, error: null }),
+        }),
+        order: () => ({
+          limit: async () => ({ data: [], error: null }),
+        }),
+      }),
+      insert: async () => ({ data: null, error: null }),
+    }),
+    rpc: async () => ({ data: [], error: null }),
+  } as any;
+}
+
+export { supabase };
 
 // =====================================================
 // Groq Client
@@ -63,7 +94,7 @@ export const supabase = createClient(
 
 let groqClient: Groq | null = null;
 
-if (config.llm.provider === 'groq' && config.llm.groq.apiKey) {
+if (config.llm.groq.apiKey) {
   groqClient = new Groq({ apiKey: config.llm.groq.apiKey });
 }
 
@@ -150,7 +181,7 @@ class OllamaClient {
     const start = Date.now();
     
     const response = await this.request<{ embedding: number[] }>('/api/embeddings', {
-      model: config.embedding.model,
+      model: config.embedding.ollama.model,
       prompt: text,
     });
     
@@ -170,7 +201,7 @@ class OllamaClient {
       const response = await this.request<{ models?: { name: string }[] }>('/api/tags', {});
       const models = response.models || [];
       const hasChatModel = models.some((m) => m.name.startsWith(config.llm.ollama.model));
-      const hasEmbedModel = models.some((m) => m.name.startsWith(config.embedding.model));
+      const hasEmbedModel = models.some((m) => m.name.startsWith(config.embedding.ollama.model));
       return hasChatModel && hasEmbedModel;
     } catch {
       return false;
@@ -178,7 +209,7 @@ class OllamaClient {
   }
 }
 
-export const ollama = new OllamaClient(config.embedding.host);
+export const ollama = new OllamaClient(config.embedding.ollama.host);
 
 // =====================================================
 // Unified LLM Interface
@@ -187,7 +218,7 @@ export const ollama = new OllamaClient(config.embedding.host);
 export interface LLMResponse {
   text: string;
   elapsed_ms: number;
-  provider: 'groq' | 'ollama';
+  provider: 'nvidia' | 'groq' | 'ollama';
 }
 
 export async function generateText(
@@ -196,10 +227,35 @@ export async function generateText(
     temperature?: number;
     maxTokens?: number;
     model?: string;
+    system_prompt?: string;
   } = {}
 ): Promise<LLMResponse> {
-  // Try Groq first (fastest)
-  if (config.llm.provider === 'groq' && groqClient) {
+  const start = Date.now();
+
+  // Try NVIDIA NIM first (primary)
+  if (config.llm.provider === 'nvidia' && config.llm.nvidia.apiKey) {
+    try {
+      const result = await NvidiaNIM.generateResponse(
+        [{ role: 'user', content: prompt }],
+        {
+          temperature: options.temperature || 0.3,
+          max_tokens: options.maxTokens || 512,
+          system_prompt: options.system_prompt,
+        }
+      );
+      
+      return {
+        text: result.text,
+        elapsed_ms: Date.now() - start,
+        provider: 'nvidia',
+      };
+    } catch (error) {
+      console.warn('⚠️ NVIDIA NIM failed, falling back to Groq:', (error as Error).message);
+    }
+  }
+
+  // Try Groq second
+  if (groqClient) {
     try {
       const completion = await groqClient.chat.completions.create({
         model: options.model || config.llm.groq.model,
@@ -210,7 +266,7 @@ export async function generateText(
       
       return {
         text: completion.choices[0]?.message?.content || '',
-        elapsed_ms: 0, // Groq doesn't provide timing
+        elapsed_ms: Date.now() - start,
         provider: 'groq',
       };
     } catch (error) {
@@ -234,10 +290,32 @@ export async function generateText(
 export interface EmbeddingResponse {
   embedding: number[];
   elapsed_ms: number;
+  provider: 'nvidia' | 'ollama';
 }
 
 export async function generateEmbedding(text: string): Promise<EmbeddingResponse> {
-  return ollama.embed(text);
+  const start = Date.now();
+
+  // Try NVIDIA NIM first (1024-dim)
+  if (config.embedding.provider === 'nvidia' && config.embedding.nvidia.apiKey) {
+    try {
+      const embedding = await NvidiaNIM.generateEmbedding(text);
+      return {
+        embedding,
+        elapsed_ms: Date.now() - start,
+        provider: 'nvidia',
+      };
+    } catch (error) {
+      console.warn('⚠️ NVIDIA NIM embedding failed, falling back to Ollama (Note: dimension mismatch likely):', (error as Error).message);
+    }
+  }
+
+  // Fallback to Ollama (768-dim)
+  const result = await ollama.embed(text);
+  return {
+    ...result,
+    provider: 'ollama',
+  };
 }
 
 // =====================================================
@@ -246,6 +324,7 @@ export async function generateEmbedding(text: string): Promise<EmbeddingResponse
 
 export interface HealthStatus {
   status: 'ok' | 'degraded' | 'down';
+  nvidia: '✅' | '❌' | '➖';
   groq: '✅' | '❌' | '➖';
   ollama: '✅' | '❌';
   supabase: '✅' | '❌';
@@ -256,15 +335,21 @@ export interface HealthStatus {
 export async function checkHealth(): Promise<HealthStatus> {
   const results: HealthStatus = {
     status: 'ok',
+    nvidia: '➖',
     groq: '➖',
     ollama: '❌',
     supabase: '❌',
     llmProvider: config.llm.provider,
-    embedModel: config.embedding.model,
+    embedModel: config.embedding.nvidia.model,
   };
   
+  // Check NVIDIA
+  if (config.llm.nvidia.apiKey) {
+    results.nvidia = '✅';
+  }
+  
   // Check Groq
-  if (config.llm.provider === 'groq' && groqClient) {
+  if (config.llm.groq.apiKey) {
     results.groq = '✅';
   }
   
@@ -274,16 +359,18 @@ export async function checkHealth(): Promise<HealthStatus> {
   
   // Check Supabase
   try {
-    const { error } = await supabase.from('reps').select('count').limit(1);
+    const { error } = await supabase.from('episode_memories').select('count').limit(1);
     results.supabase = error ? '❌' : '✅';
   } catch {
     results.supabase = '❌';
   }
   
   // Determine overall status
-  if (results.ollama === '❌' || results.supabase === '❌') {
+  if (results.supabase === '❌') {
     results.status = 'down';
-  } else if (results.groq === '❌' && config.llm.provider === 'groq') {
+  } else if (results.nvidia === '➖' && results.groq === '➖' && results.ollama === '❌') {
+    results.status = 'down';
+  } else if (results.nvidia === '❌' || results.groq === '❌') {
     results.status = 'degraded';
   }
   
@@ -295,3 +382,4 @@ export async function checkHealth(): Promise<HealthStatus> {
 // =====================================================
 
 export { config };
+

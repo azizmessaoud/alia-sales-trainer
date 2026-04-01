@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS episode_memories (
     rep_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     episode_text TEXT NOT NULL,
-    episode_embedding vector(768), -- 768-dim for nomic-embed-text
+    episode_embedding vector(1024), -- 1024-dim for NV-Embed-QA
     learning_summary JSONB DEFAULT '{}',
     accuracy DECIMAL(5,2) DEFAULT 0,
     compliance DECIMAL(5,2) DEFAULT 0,
@@ -243,4 +243,6 @@ ON CONFLICT DO
 -- Verify tables created
 SELECT '✅ Memory OS initialized' as status;
 SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;
+
+e;
 

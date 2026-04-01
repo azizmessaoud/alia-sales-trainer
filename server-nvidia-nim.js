@@ -33,7 +33,7 @@ if (fs.existsSync(envPath)) {
 // Configuration
 // =====================================================
 
-const PORT = 3000;
+const PORT = process.env.NIM_PORT ? Number(process.env.NIM_PORT) : 3000;
 
 // NVIDIA NIM Configuration
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
