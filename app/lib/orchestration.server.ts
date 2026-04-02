@@ -629,6 +629,8 @@ export function stateToResponse(state: OrchestrationState) {
       audio: state.audioBase64,
       blendshapes: state.blendshapes,
       duration: state.audioDuration,
+      isCompliant: state.isCompliant,
+      complianceReason: state.complianceReason,
       metadata: state.metrics,
     },
   };

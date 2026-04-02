@@ -287,10 +287,10 @@ async function handleChat(ws, { message }) {
     const data = await response.json();
 
     // Send orchestration results back through WebSocket
-    send(ws, 'stage', { stage: 'orchestration_complete', duration: data.totalDuration });
-    send(ws, 'llm_text', { text: data.llm_response, llmTime: data.llmDuration });
-    send(ws, 'compliance', { isCompliant: data.isCompliant, score: data.complianceScore });
-    send(ws, 'pipeline_complete', { totalTime: data.totalDuration, breakdown: data.breakdown });
+    send(ws, 'stage', { stage: 'orchestration_complete', duration: data.metadata?.totalTime });
+    send(ws, 'llm_text', { text: data.text, llmTime: data.metadata?.llmTime });
+    send(ws, 'compliance', { isCompliant: data.isCompliant, reason: data.complianceReason });
+    send(ws, 'pipeline_complete', { totalTime: data.metadata?.totalTime, breakdown: data.metadata });
   } catch (error) {
     console.error('[WS] Orchestration error:', error.message);
     send(ws, 'error', { message: `Orchestration failed: ${error.message}` });

@@ -489,9 +489,8 @@ export default function Index() {
   useEffect(() => {
     if (wsStatus === 'connected' && !hasStartedSession.current) {
       hasStartedSession.current = true;
-      // Set session language from environment or default
-      const envLanguage = process.env.DEFAULT_LANGUAGE ?? 'en-US';
-      setSessionLanguage(envLanguage);
+      // Set session language to default (en-US) or from browser preference
+      setSessionLanguage('en-US');
       startSession();
     }
   }, [wsStatus, startSession]);

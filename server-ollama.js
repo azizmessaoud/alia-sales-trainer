@@ -33,7 +33,7 @@ if (fs.existsSync(envPath)) {
 // Configuration
 // =====================================================
 
-const PORT = 3000;
+const PORT = 3002; // Fallback LLM server (3000 = NIM, 3001 = WebSocket, 5173 = Frontend)
 
 // LLM Provider Configuration
 const LLM_PROVIDER = process.env.LLM_PROVIDER || 'groq'; // 'groq' or 'ollama'

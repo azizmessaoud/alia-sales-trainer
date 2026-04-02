@@ -229,6 +229,16 @@ export function useALIAWebSocket(
         setCurrentStage(null);
         break;
 
+      case 'message_received':
+        // Server acknowledged message receipt
+        console.log('[WS] Message acknowledged, id:', payload.message_id);
+        break;
+
+      case 'compliance':
+        // Compliance evaluation result (informational)
+        console.log('[WS] Compliance:', payload.isCompliant ? '✅ Pass' : '❌ Fail', payload.reason || '');
+        break;
+
       case 'error':
         setCurrentStage(null);
         cbRef.current.onError?.(payload.message);
