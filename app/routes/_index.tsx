@@ -74,6 +74,14 @@ export default function Index() {
   const nextChunkTimeRef = useRef<number>(0);
   const chunkBufferRef = useRef<AudioBufferSourceNode[]>([]);
 
+  // Stable audio ref callback to avoid rewiring avatar audio clock on every render.
+  const bindAudioElementRef = useCallback((el: HTMLAudioElement | null) => {
+    (audioElementRef as React.MutableRefObject<HTMLAudioElement | null>).current = el;
+    if (el && avatarRef.current && !usingBrowserTTSRef.current) {
+      avatarRef.current.setAudioElement(el);
+    }
+  }, []);
+
   // =====================================================
   // Full-Duplex WebSocket — progressive pipeline
   // =====================================================
@@ -446,7 +454,21 @@ export default function Index() {
     recognition.onend = () => setIsListening(false);
 
     recognitionRef.current = recognition;
-  }, []);
+
+    return () => {
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      try {
+        recognition.stop();
+      } catch {
+        // no-op: recognition may already be stopped
+      }
+      if (recognitionRef.current === recognition) {
+        recognitionRef.current = null;
+      }
+    };
+  }, [sessionLanguage]);
 
   const toggleMicrophone = useCallback(() => {
     if (!recognitionRef.current) {
@@ -588,11 +610,7 @@ export default function Index() {
     }}>
       {/* Hidden audio element for playback — also used as master clock for lip-sync */}
       <audio
-        ref={(el) => {
-          // Store ref AND pass to Avatar's LipSyncAnimator as master clock
-          (audioElementRef as React.MutableRefObject<HTMLAudioElement | null>).current = el;
-          avatarRef.current?.setAudioElement(el);
-        }}
+        ref={bindAudioElementRef}
         style={{ display: 'none' }}
       />
 
