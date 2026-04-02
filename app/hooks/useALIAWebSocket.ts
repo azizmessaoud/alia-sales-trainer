@@ -87,6 +87,7 @@ export function useALIAWebSocket(
     maxReconnectDelay = 5000,
     onLLMText,
     onTTSAudio,
+    onTTSChunk,
     onLipSync,
     onPipelineComplete,
     onStageChange,
@@ -107,8 +108,10 @@ export function useALIAWebSocket(
   const [currentStage, setCurrentStage] = useState<string | null>(null);
 
   // Keep latest callbacks in refs so we don't re-connect on every render
+  // All callback invocations are read from this ref to avoid stale closures.
   const cbRef = useRef(options);
   cbRef.current = options;
+  const handleServerMessageRef = useRef<(type: string, payload: any) => void>(() => undefined);
 
   // ─── Connect / Reconnect ────────────────────
   const connect = useCallback(() => {
@@ -182,7 +185,7 @@ export function useALIAWebSocket(
           if (typeof type !== 'string') {
             throw new Error('Message missing string type');
           }
-          handleServerMessage(type, payload);
+          handleServerMessageRef.current(type, payload);
         } catch (error) {
           const preview =
             typeof event.data === 'string'
@@ -198,7 +201,7 @@ export function useALIAWebSocket(
   }, [url, autoReconnect, maxReconnectDelay]);
 
   // ─── Server message dispatcher ──────────────
-  function handleServerMessage(type: string, payload: any = {}) {
+  const handleServerMessage = useCallback((type: string, payload: any = {}) => {
     switch (type) {
       case 'connected':
         console.log('[WS]', payload?.message ?? 'Connected');
@@ -276,7 +279,8 @@ export function useALIAWebSocket(
       default:
         console.log('[WS] Unhandled:', type, payload);
     }
-  }
+  }, []);
+  handleServerMessageRef.current = handleServerMessage;
 
   // ─── Lifecycle ──────────────────────────────
   useEffect(() => {
@@ -311,7 +315,7 @@ export function useALIAWebSocket(
   }, [sendJSON]);
 
   const sendChat = useCallback(
-    (message: string) => sendJSON('chat', { message }),
+    (message: string) => sendJSON('chat', { message, session_id: sessionIdRef.current }),
     [sendJSON]
   );
 
@@ -322,9 +326,14 @@ export function useALIAWebSocket(
 
   const startSession = useCallback(
     (repId?: string) => {
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const validRepId = repId && uuidPattern.test(repId) ? repId : null;
       const session_id = crypto.randomUUID();
       sessionIdRef.current = session_id;
-      sendJSON('start_session', { session_id, rep_id: repId || 'demo' });
+      sendJSON('start_session', {
+        session_id,
+        ...(validRepId ? { rep_id: validRepId } : {}),
+      });
     },
     [sendJSON]
   );

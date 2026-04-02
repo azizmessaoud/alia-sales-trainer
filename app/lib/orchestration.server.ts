@@ -117,6 +117,11 @@ function detectLanguage(language?: string): DetectedLanguage {
   return 'en';
 }
 
+function isValidUuid(value: string | null | undefined): value is string {
+  if (!value) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
 // =====================================================
 // Types & State Definition
 // =====================================================
@@ -135,7 +140,7 @@ export interface PipelineUpdate {
 export interface OrchestrationState {
   // Input
   userMessage: string;
-  repId: string;
+  repId: string | null;
   sessionId: string;
   timestamp: number;
   session?: { language?: string; [key: string]: any };
@@ -186,7 +191,7 @@ export interface OrchestrationState {
 
 const StateAnnotation = Annotation.Root({
   userMessage: Annotation<string>(),
-  repId: Annotation<string>(),
+  repId: Annotation<string | null>(),
   sessionId: Annotation<string>(),
   timestamp: Annotation<number>(),
   session: Annotation<any | undefined>(),
@@ -311,6 +316,18 @@ const retrievalNode = async (state: OrchestrationState): Promise<Partial<Orchest
     const detectedLanguage = detectLanguage(state.language);
     const ragNamespace = `vital-${detectedLanguage}`;
 
+    if (!isValidUuid(state.repId)) {
+      const memoryDuration = Date.now() - start;
+      return {
+        memories: [],
+        memoryContext: '',
+        repProfile: null,
+        detectedLanguage,
+        ragNamespace,
+        metrics: { ...state.metrics, memoryTime: memoryDuration },
+      };
+    }
+
     // Retrieve memories and profile in parallel
     const [memories, profile] = await Promise.all([
       MemoryOS.retrieveEpisodeMemories({
@@ -334,7 +351,7 @@ const retrievalNode = async (state: OrchestrationState): Promise<Partial<Orchest
     console.log(JSON.stringify({
       kind: 'rag_timing',
       sessionId: state.sessionId,
-      repId: state.repId,
+      repId: state.repId ?? 'anonymous',
       language: state.language ?? 'en-US',
       ragNamespace,
       memoryCount: memories?.length ?? 0,
@@ -565,7 +582,7 @@ const graph = (workflow as any).compile();
  */
 export async function orchestrateConversation(
   userMessage: string,
-  repId: string = crypto.randomUUID(),
+  repId: string | null = null,
   sessionId: string = 'default',
   session?: { language?: string; [key: string]: any },
   onUpdate?: (event: PipelineUpdate) => void,
@@ -573,7 +590,7 @@ export async function orchestrateConversation(
 ): Promise<OrchestrationState> {
   const initialState: OrchestrationState = {
     userMessage,
-    repId,
+    repId: isValidUuid(repId) ? repId : null,
     sessionId,
     session,
     language: (session?.language as SupportedLanguage) ?? 'en-US',
@@ -601,10 +618,10 @@ export async function orchestrateConversation(
       callbacks: tracer ? [tracer] : [],
       configurable: {
         thread_id: sessionId,
-        run_name: `alia-pipeline-${repId}`,
+        run_name: `alia-pipeline-${repId ?? 'anonymous'}`,
       },
       metadata: {
-        repId,
+        repId: repId ?? 'anonymous',
         sessionId,
         language: session?.language ?? 'en-US',
         useStreaming,

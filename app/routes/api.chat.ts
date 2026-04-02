@@ -8,6 +8,8 @@ import { json } from '@remix-run/node';
 import type { ActionFunction } from '@remix-run/node';
 import { orchestrateConversation, stateToResponse } from '~/lib/orchestration.server';
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 interface ChatRequest {
   message: string;
   sessionId?: string;
@@ -56,7 +58,8 @@ export const action: ActionFunction = async ({ request }) => {
 
     // Execute complete orchestration pipeline
     const session = session_id || sessionId || crypto.randomUUID();
-    const resolvedRepId = rep_id || repId || crypto.randomUUID();
+    const repCandidate = typeof rep_id === 'string' ? rep_id : typeof repId === 'string' ? repId : null;
+    const resolvedRepId = repCandidate && UUID_RE.test(repCandidate) ? repCandidate : null;
     const state = await orchestrateConversation(
       message,
       resolvedRepId,

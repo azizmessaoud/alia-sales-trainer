@@ -84,6 +84,11 @@ if (NVIDIA_API_KEY) {
 const sessions = new Map();
 const clients = new Map(); // ws → { session_id, abortController }
 const cvMetrics = new Map();
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidUuid(value) {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
 
 function logPipelineTiming({ sessionId, stage, durationMs, error = null, meta = {} }) {
   const payload = {
@@ -161,8 +166,9 @@ async function handleMessage(ws, msg) {
 // ─────────────────────────────────────────────────
 function handleStartSession(ws, { rep_id, session_id, voice_id, tts_voice, language }) {
   if (!session_id) session_id = crypto.randomUUID();
+  const normalizedRepId = isValidUuid(rep_id) ? rep_id : null;
   const session = {
-    rep_id,
+    rep_id: normalizedRepId,
     session_id,
     started_at: Date.now(),
     messages: [],
@@ -178,7 +184,7 @@ function handleStartSession(ws, { rep_id, session_id, voice_id, tts_voice, langu
   console.log(`[WS] Session started: ${session_id}`);
   send(ws, 'session_started', {
     session_id,
-    rep_id,
+    rep_id: normalizedRepId,
     started_at: session.started_at,
   });
 }
@@ -274,7 +280,7 @@ async function handleChat(ws, { message }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message,
-        rep_id: session.rep_id || crypto.randomUUID(),
+        rep_id: session.rep_id ?? null,
         session_id,
         language: session.language || 'en-US',
       }),

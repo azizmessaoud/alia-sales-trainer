@@ -355,16 +355,22 @@ export default function Index() {
     try {
       setIsSpeaking(true);
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'en-US';
+      const isFrench = /[àâäéèêëîïôùûüç]/i.test(text) || /\b(avoir|être|faire|avec|pour)\b/i.test(text);
+      const utteranceLang = isFrench ? 'fr-FR' : 'en-US';
+      utterance.lang = utteranceLang;
       utterance.rate = 0.95;
       utterance.pitch = 1.0;
 
       // Try to find a female voice
       const voices = window.speechSynthesis.getVoices();
+      const langPrefix = utteranceLang.slice(0, 2).toLowerCase();
       const preferred = voices.find(v =>
-        v.name.includes('Female') || v.name.includes('Zira') ||
-        v.name.includes('Aria') || v.name.includes('Jenny')
-      );
+        v.lang?.toLowerCase().startsWith(langPrefix) && (
+          v.name.includes('Female') || v.name.includes('Zira') ||
+          v.name.includes('Aria') || v.name.includes('Jenny') ||
+          v.name.includes('Google')
+        )
+      ) || voices.find(v => v.lang?.toLowerCase().startsWith(langPrefix));
       if (preferred) utterance.voice = preferred;
 
       utterance.onend = () => setIsSpeaking(false);
