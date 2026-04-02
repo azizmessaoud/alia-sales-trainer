@@ -55,9 +55,6 @@ import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import OpenAI from 'openai';
 import crypto from 'node:crypto';
-import {
-  orchestrateConversation,
-} from './app/lib/orchestration.server.ts';
 
 // ─────────────────────────────────────────────────
 // Configuration
@@ -270,70 +267,33 @@ async function handleChat(ws, { message }) {
   send(ws, 'message_received', { message_id: crypto.randomUUID() });
 
   try {
-    // Run LangGraph Orchestration
-    const latestCv = cvMetrics.get(session_id);
-    await orchestrateConversation(
-      message,
-      session.rep_id || 'demo-rep',
-      session_id,
-      session,
-      (event) => {
-        if (ac.signal.aborted) return;
+    // Delegate orchestration to Remix backend via HTTP
+    const rimaxBackendUrl = process.env.REMIX_BACKEND_URL || 'http://localhost:5173';
+    const response = await fetch(`${rimaxBackendUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        rep_id: session.rep_id || 'demo-rep',
+        session_id,
+        language: session.language || 'en-US',
+      }),
+    });
 
-        // Debug: log orchestration events to help diagnose missing stages
-        try {
-          const evt = typeof event === 'string' ? event : JSON.stringify(event, (k, v) => (k === 'audio' ? '[binary]' : v));
-          console.log('[WS] Orchestration event:', evt.substring ? evt.substring(0, 1000) : evt);
-        } catch (e) {
-          console.log('[WS] Orchestration event (unserializable)');
-        }
+    if (!response.ok) {
+      throw new Error(`Remix backend error: ${response.statusText}`);
+    }
 
-        // Map LangGraph events to WebSocket protocol
-        switch (event.type) {
-          case 'stage':
-            if (event.payload.stage === 'complete') {
-              send(ws, 'pipeline_complete', {
-                totalTime: event.payload.totalTime,
-                breakdown: event.payload.breakdown
-              });
-            } else {
-              send(ws, 'stage', event.payload);
-            }
-            break;
-          case 'llm_text':
-            session.messages.push({ role: 'assistant', content: event.payload.text, timestamp: Date.now() });
-            send(ws, 'llm_text', event.payload);
-            break;
-          case 'tts_chunk':
-            send(ws, 'tts_chunk', event.payload);
-            if (event.payload?.isFinal) {
-              send(ws, 'tts_done', { durationMs: Date.now() - session.started_at });
-            }
-            break;
-          case 'tts_audio':
-            send(ws, 'tts_audio', event.payload);
-            break;
-          case 'lipsync_blendshapes':
-            send(ws, 'lipsync_blendshapes', event.payload);
-            break;
-          case 'compliance_violation':
-            send(ws, 'compliance_violation', event.payload);
-            break;
-          case 'error':
-            send(ws, 'error', event.payload);
-            break;
-        }
-      },
-      latestCv ? {
-        gaze: latestCv.gaze_contact,
-        posture: latestCv.posture_score,
-        emotion: latestCv.emotion,
-      } : undefined
-    );
-  } catch (err) {
-    if (ac.signal.aborted) return;
-    console.error('[WS] Pipeline error:', err.message || err);
-    send(ws, 'error', { message: err.message || 'Pipeline failed' });
+    const data = await response.json();
+
+    // Send orchestration results back through WebSocket
+    send(ws, 'stage', { stage: 'orchestration_complete', duration: data.totalDuration });
+    send(ws, 'llm_text', { text: data.llm_response, llmTime: data.llmDuration });
+    send(ws, 'compliance', { isCompliant: data.isCompliant, score: data.complianceScore });
+    send(ws, 'pipeline_complete', { totalTime: data.totalDuration, breakdown: data.breakdown });
+  } catch (error) {
+    console.error('[WS] Orchestration error:', error.message);
+    send(ws, 'error', { message: `Orchestration failed: ${error.message}` });
   } finally {
     clientState.abortController = null;
   }

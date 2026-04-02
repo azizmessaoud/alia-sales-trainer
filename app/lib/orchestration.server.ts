@@ -98,12 +98,12 @@ const LangAnnotationExport = (LangGraph as any).Annotation as AnnotationType | u
 const AnnotationShim: AnnotationType = ((<T>(_?: any) => undefined) as unknown) as AnnotationType;
 AnnotationShim.Root = (obj: Record<string, any>) => obj;
 const Annotation: AnnotationType = LangAnnotationExport ?? AnnotationShim;
-import { NvidiaNIM } from './nvidia-nim.server.js';
-import { evaluateCompliance, buildComplianceInterruptionText } from './compliance-gate.server.js';
-import { MemoryOS, type RepProfile } from './memory-os.server.js';
-import { RAGPipeline } from './rag-pipeline.server.js';
-import { runTTS, runTTSStreaming, runTTSWithTimestamps } from './tts.server.js';
-import { alignmentToVisemes, generateMockBlendshapes } from './lipsync.server.js';
+import { NvidiaNIM } from './nvidia-nim.server';
+import { evaluateCompliance, buildComplianceInterruptionText } from './compliance-gate.server';
+import { MemoryOS, type RepProfile } from './memory-os.server';
+import { RAGPipeline } from './rag-pipeline.server';
+import { runTTS, runTTSStreaming, runTTSWithTimestamps } from './tts.server';
+import { alignmentToVisemes, generateMockBlendshapes } from './lipsync.server';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 type SupportedLanguage = 'en-US' | 'fr-FR' | 'ar-SA' | 'es-ES';
