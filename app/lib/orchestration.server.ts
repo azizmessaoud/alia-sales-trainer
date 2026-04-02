@@ -172,6 +172,7 @@ export interface OrchestrationState {
     memoryTime: number;
     llmTime: number;
     ttsTime: number;
+    lipsyncTime: number;
     totalTime: number;
   };
 
@@ -213,6 +214,7 @@ const StateAnnotation = Annotation.Root({
     memoryTime: number;
     llmTime: number;
     ttsTime: number;
+    lipsyncTime: number;
     totalTime: number;
   }>({
     reducer: (x: any, y: any) => ({ ...x, ...y }),
@@ -221,6 +223,7 @@ const StateAnnotation = Annotation.Root({
       memoryTime: 0,
       llmTime: 0,
       ttsTime: 0,
+      lipsyncTime: 0,
       totalTime: 0,
     }),
   }),
@@ -498,7 +501,7 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
         audioBase64,
         blendshapes,
         isMock,
-        metrics: { ...state.metrics, ttsTime: duration },
+        metrics: { ...state.metrics, ttsTime: duration, lipsyncTime: 0 },
       };
     } else {
       // Compatibility path — existing tests pass through here
@@ -518,7 +521,7 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
         audioDuration: ttsResult.duration,
         blendshapes: frames,
         isMock: ttsResult.isMock,
-        metrics: { ...state.metrics, ttsTime: duration },
+        metrics: { ...state.metrics, ttsTime: duration, lipsyncTime: 0 },
       };
     }
   } catch (error) {
@@ -588,6 +591,7 @@ export async function orchestrateConversation(
       memoryTime: 0,
       llmTime: 0,
       ttsTime: 0,
+      lipsyncTime: 0,
       totalTime: 0,
     },
   };

@@ -311,22 +311,33 @@ async function handleChat(ws, { message }) {
       });
     }
 
-    if (typeof data.audio === 'string' && data.audio.length > 0) {
+    const hasAudioPayload = typeof data.audio === 'string' && data.audio.length > 0;
+    const isMockAudio = data.isMock === true;
+    if (hasAudioPayload || isMockAudio) {
       send(ws, 'tts_audio', {
-        audio: data.audio,
+        audio: hasAudioPayload ? data.audio : '',
         duration: typeof data.duration === 'number' ? data.duration : 0,
         ttsTime: metadata.ttsTime ?? 0,
-        isMock: data.isMock === true,
+        isMock: isMockAudio,
       });
       send(ws, 'tts_done', { durationMs: metadata.ttsTime ?? 0 });
     }
 
-    if (Array.isArray(data.blendshapes) && data.blendshapes.length > 0) {
+    const blendshapes = Array.isArray(data.blendshapes) && data.blendshapes.length > 0
+      ? data.blendshapes
+      : (isMockAudio
+          ? generateMockFrames(
+              60,
+              Math.max(1200, Math.round(((typeof data.duration === 'number' ? data.duration : 2) * 1000)))
+            )
+          : []);
+
+    if (blendshapes.length > 0) {
       send(ws, 'lipsync_blendshapes', {
-        blendshapes: data.blendshapes,
+        blendshapes,
         lipsyncTime: metadata.lipsyncTime ?? 0,
         timeline: null,
-        isMock: data.isMock === true,
+        isMock: isMockAudio,
       });
     }
 

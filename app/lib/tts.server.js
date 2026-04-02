@@ -35,6 +35,35 @@ function parseWavDuration(buf) {
 }
 
 /**
+ * Build a minimal mono 16-bit PCM WAV buffer filled with silence.
+ * Used for mock fallback so downstream stages still get valid audio timing.
+ */
+function createSilentWav(durationSec = 1, sampleRate = 16000) {
+  const channels = 1;
+  const bitsPerSample = 16;
+  const samples = Math.max(1, Math.floor(durationSec * sampleRate));
+  const bytesPerSample = bitsPerSample / 8;
+  const dataSize = samples * channels * bytesPerSample;
+  const buf = Buffer.alloc(44 + dataSize);
+
+  buf.write('RIFF', 0);
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.write('WAVE', 8);
+  buf.write('fmt ', 12);
+  buf.writeUInt32LE(16, 16); // PCM chunk size
+  buf.writeUInt16LE(1, 20); // PCM format
+  buf.writeUInt16LE(channels, 22);
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * channels * bytesPerSample, 28); // byte rate
+  buf.writeUInt16LE(channels * bytesPerSample, 32); // block align
+  buf.writeUInt16LE(bitsPerSample, 34);
+  buf.write('data', 36);
+  buf.writeUInt32LE(dataSize, 40);
+
+  return buf;
+}
+
+/**
  * Resolve active voice settings for this turn.
  */
 function getActiveVoice(session = null) {
@@ -194,6 +223,11 @@ export async function runTTS(text, session = null, options = {}) {
   // Mock fallback
   const wordCount = text.split(/\s+/).length;
   const duration = Math.max(1, wordCount / 2.5);
-  return { audioBase64: '', duration, isMock: true };
+  const silentWav = createSilentWav(duration);
+  return {
+    audioBase64: silentWav.toString('base64'),
+    duration: parseWavDuration(silentWav),
+    isMock: true,
+  };
 }
 
