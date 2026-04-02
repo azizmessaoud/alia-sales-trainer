@@ -543,7 +543,7 @@ const graph = (workflow as any).compile();
  */
 export async function orchestrateConversation(
   userMessage: string,
-  repId: string = 'demo-rep',
+  repId: string = crypto.randomUUID(),
   sessionId: string = 'default',
   session?: { language?: string; [key: string]: any },
   onUpdate?: (event: PipelineUpdate) => void,

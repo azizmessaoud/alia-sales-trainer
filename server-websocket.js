@@ -274,7 +274,7 @@ async function handleChat(ws, { message }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message,
-        rep_id: session.rep_id || 'demo-rep',
+        rep_id: session.rep_id || crypto.randomUUID(),
         session_id,
         language: session.language || 'en-US',
       }),
