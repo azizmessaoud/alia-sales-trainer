@@ -395,7 +395,7 @@ export default function Index() {
   }, [isSpeaking]);
 
   // =====================================================
-  // Wire audio element → Avatar as master clock (re-run when Avatar mounts)
+  // Wire audio element → Avatar as master clock (run once on mount only)
   // =====================================================
   useEffect(() => {
     // Don't re-wire when browser TTS is active — <audio> element won't be
@@ -408,7 +408,7 @@ export default function Index() {
         currentTime: audioElementRef.current.currentTime,
       });
     }
-  });
+  }, []);
 
   // =====================================================
   // Microphone Input (Web Speech API — zero-latency STT)

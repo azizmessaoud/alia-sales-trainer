@@ -229,6 +229,14 @@ export function useALIAWebSocket(
         setCurrentStage(null);
         break;
 
+      case 'tts_done':
+        // Server signals TTS stream finished — no UI action needed
+        break;
+
+      case 'session_ended':
+        sessionIdRef.current = null;
+        break;
+
       case 'message_received':
         // Server acknowledged message receipt
         console.log('[WS] Message acknowledged, id:', payload.message_id);
