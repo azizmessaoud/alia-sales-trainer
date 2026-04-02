@@ -93,10 +93,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/azizmessaoud/alia-medical-training.git"
+    "url": "https://github.com/azizmessaoud/alia.git"
   },
   "bugs": {
-    "url": "https://github.com/azizmessaoud/alia-medical-training/issues"
+    "url": "https://github.com/azizmessaoud/alia/issues"
   },
-  "homepage": "https://github.com/azizmessaoud/alia-medical-training#readme"
+  "homepage": "https://github.com/azizmessaoud/alia/tree/a"
 }
