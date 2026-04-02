@@ -53,6 +53,7 @@ const INTERRUPTION_TEXTS = {
 
 function detectLanguage(message) {
   if (/[\u0600-\u06FF]/.test(message)) return 'ar';
+  if (/[ñáéíóú¿¡]/i.test(message) || /\b(usted|ustedes|medicamento|tratamiento|receta|síntoma|dolor|paciente)\b/i.test(message)) return 'es';
   if (/\b(le|la|les|de|du|des|un|une|je|vous|nous|est|sont|avec|pour)\b/i.test(message)) return 'fr';
   return 'en';
 }
@@ -70,7 +71,7 @@ function getInterruptionText(reason, lang = 'en') {
  * Tier 2: Soft violations → warn, allow with coaching (severity 0.3–0.6)
  * @param {string} message
  * @param {object} [options]
- * @param {string} [options.language] - 'en'|'fr'|'ar' (auto-detected if omitted)
+ * @param {string} [options.language] - 'en'|'fr'|'ar'|'es' (auto-detected if omitted)
  * @returns {Promise<{is_compliant: boolean, severity: number, reason?: string, interruption_text?: string, tier: 1|2|null}>}
  */
 export async function evaluateCompliance(message, options = {}) {

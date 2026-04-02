@@ -149,6 +149,7 @@ export interface OrchestrationState {
   // intermediate processing
   isCompliant: boolean;
   complianceReason?: string;
+  complianceTier?: 1 | 2 | null;
   memories?: any[];
   memoryContext?: string;
   repProfile?: RepProfile | null;
@@ -196,6 +197,7 @@ const StateAnnotation = Annotation.Root({
   emotion: Annotation<string | undefined>(),
   isCompliant: Annotation<boolean>(),
   complianceReason: Annotation<string | undefined>(),
+  complianceTier: Annotation<1 | 2 | null | undefined>(),
   memories: Annotation<any[] | undefined>(),
   memoryContext: Annotation<string | undefined>(),
   repProfile: Annotation<RepProfile | null | undefined>(),
@@ -258,21 +260,27 @@ const complianceNode = async (state: OrchestrationState): Promise<Partial<Orches
   console.time(timerLabel);
   try {
     if (state.onUpdate) state.onUpdate({ type: 'stage', payload: { stage: 'compliance' } });
-    const result = await evaluateCompliance(state.userMessage);
+    const detectedLanguage = detectLanguage(state.language);
+    const result = await evaluateCompliance(state.userMessage, { language: detectedLanguage });
+    const isSoftViolation = result.is_compliant === false && result.tier === 2;
+    const localizedInterruptionText = result.interruption_text
+      ?? buildComplianceInterruptionText(result.reason ?? '', detectedLanguage);
     
     if (!result.is_compliant && state.onUpdate) {
       state.onUpdate({ 
         type: 'compliance_violation', 
         payload: { 
-          message: buildComplianceInterruptionText(result.reason ?? ''),
+          message: localizedInterruptionText,
           compliance: result
         } 
       });
     }
 
     return {
-      isCompliant: result.is_compliant,
+      isCompliant: result.is_compliant || isSoftViolation,
       complianceReason: result.reason,
+      complianceTier: result.tier ?? null,
+      detectedLanguage,
       metrics: { ...state.metrics, complianceTime: Date.now() - start },
     };
   } catch (error) {
@@ -357,9 +365,13 @@ const llmNode = async (state: OrchestrationState): Promise<Partial<Orchestration
   try {
     if (state.onUpdate) state.onUpdate({ type: 'stage', payload: { stage: 'llm' } });
     let responseText: string;
+    const complianceLanguage = state.detectedLanguage ?? detectLanguage(state.language);
 
     if (!state.isCompliant) {
-      responseText = buildComplianceInterruptionText(state.complianceReason || '');
+      responseText = buildComplianceInterruptionText(
+        state.complianceReason || '',
+        complianceLanguage
+      );
     } else {
       const lang = (state.language ?? 'en-US') as SupportedLanguage;
       const personaPrompt = SYSTEM_PROMPTS[lang] ?? SYSTEM_PROMPTS['en-US'];
@@ -368,7 +380,14 @@ const llmNode = async (state: OrchestrationState): Promise<Partial<Orchestration
         state.memories || [],
         state.repProfile || null
       );
-      const systemPrompt = `${personaPrompt}\n\n${ragPrompt}\n\n${buildMultimodalContext(state)}`;
+      const coachingHint = state.complianceTier === 2 && state.complianceReason
+        ? [
+            '--- COMPLIANCE COACHING HINT ---',
+            `Soft warning detected: ${state.complianceReason}.`,
+            'Answer the user normally, but include one short compliant coaching reminder.',
+          ].join('\n')
+        : '';
+      const systemPrompt = `${personaPrompt}\n\n${ragPrompt}${coachingHint ? `\n\n${coachingHint}` : ''}\n\n${buildMultimodalContext(state)}`;
 
       const messages: ChatCompletionMessageParam[] = [
         { role: 'user', content: state.userMessage },
@@ -631,6 +650,7 @@ export function stateToResponse(state: OrchestrationState) {
       duration: state.audioDuration,
       isCompliant: state.isCompliant,
       complianceReason: state.complianceReason,
+      complianceTier: state.complianceTier,
       metadata: state.metrics,
     },
   };
