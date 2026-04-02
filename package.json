@@ -20,13 +20,16 @@
     "format": "prettier --write \"app/**/*.{ts,tsx,css,md}\"",
     "server": "node server-nvidia-nim.js",
     "server:ws": "node server-websocket.js",
-    "dev:all": "concurrently \"npm run server\" \"npm run server:ws\" \"npm run dev\""
+    "dev:all": "concurrently \"npm run server\" \"npm run server:ws\" \"npm run dev\"",
+    "ingest-vital-docs": "dotenv -e .env -- tsx scripts/ingest-vital-docs.ts",
+    "test-rag": "dotenv -e .env -- tsx scripts/test-rag.ts"
   },
   "dependencies": {
     "@huggingface/inference": "^4.13.15",
     "@langchain/core": "^0.1.63",
     "@langchain/langgraph": "^0.0.12",
     "@langchain/openai": "^0.0.20",
+    "@qdrant/js-client-rest": "^1.17.0",
     "@remix-run/node": "^2.8.1",
     "@remix-run/react": "^2.8.1",
     "@remix-run/serve": "^2.8.1",
