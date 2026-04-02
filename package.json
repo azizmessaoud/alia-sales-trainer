@@ -21,8 +21,8 @@
     "server": "node server-nvidia-nim.js",
     "server:ws": "node server-websocket.js",
     "dev:all": "concurrently \"npm run server\" \"npm run server:ws\" \"npm run dev\"",
-    "ingest-vital-docs": "dotenv -e .env -- tsx scripts/ingest-vital-docs.ts",
-    "test-rag": "dotenv -e .env -- tsx scripts/test-rag.ts"
+    "ingest-vital-docs": "tsx scripts/ingest-vital-docs.ts",
+    "test-rag": "tsx scripts/test-rag.ts"
   },
   "dependencies": {
     "@huggingface/inference": "^4.13.15",
@@ -92,10 +92,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/azizmessaoud/alia-medical-training.git"
+    "url": "https://github.com/azizmessaoud/alia.git"
   },
   "bugs": {
-    "url": "https://github.com/azizmessaoud/alia-medical-training/issues"
+    "url": "https://github.com/azizmessaoud/alia/issues"
   },
-  "homepage": "https://github.com/azizmessaoud/alia-medical-training#readme"
+  "homepage": "https://github.com/azizmessaoud/alia/tree/a"
 }
