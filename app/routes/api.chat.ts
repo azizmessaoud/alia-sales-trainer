@@ -11,6 +11,10 @@ import { orchestrateConversation, stateToResponse } from '~/lib/orchestration.se
 interface ChatRequest {
   message: string;
   sessionId?: string;
+  session_id?: string;
+  repId?: string;
+  rep_id?: string;
+  language?: string;
 }
 
 interface ChatResponse {
@@ -40,7 +44,7 @@ export const action: ActionFunction = async ({ request }) => {
 
   try {
     const body = (await request.json()) as ChatRequest;
-    const { message, sessionId } = body;
+    const { message, sessionId, session_id, repId, rep_id, language } = body;
 
     if (!message) {
       return json({ error: 'Message required' }, { status: 400 });
@@ -51,9 +55,14 @@ export const action: ActionFunction = async ({ request }) => {
     console.log(`User: "${message.substring(0, 60)}${message.length > 60 ? '...' : ''}"`);
 
     // Execute complete orchestration pipeline
-    const session = sessionId || crypto.randomUUID();
-    const repId = crypto.randomUUID(); // Use real UUID instead of 'demo-rep'
-    const state = await orchestrateConversation(message, repId, session);
+    const session = session_id || sessionId || crypto.randomUUID();
+    const resolvedRepId = rep_id || repId || crypto.randomUUID();
+    const state = await orchestrateConversation(
+      message,
+      resolvedRepId,
+      session,
+      { language: language || 'en-US' }
+    );
 
     // Convert state to HTTP response
     const response = stateToResponse(state);

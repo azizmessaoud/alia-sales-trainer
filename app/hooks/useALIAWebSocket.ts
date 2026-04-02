@@ -168,61 +168,82 @@ export function useALIAWebSocket(
         console.warn('[WS] Connection error');
       };
 
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         try {
-          const { type, payload } = JSON.parse(event.data);
+          const raw =
+            typeof event.data === 'string'
+              ? event.data
+              : event.data instanceof Blob
+                ? await event.data.text()
+                : String(event.data);
+          const parsed = JSON.parse(raw);
+          const type = parsed?.type;
+          const payload = parsed?.payload ?? {};
+          if (typeof type !== 'string') {
+            throw new Error('Message missing string type');
+          }
           handleServerMessage(type, payload);
-        } catch {
-          console.warn('[WS] Invalid message from server');
+        } catch (error) {
+          const preview =
+            typeof event.data === 'string'
+              ? event.data.slice(0, 200)
+              : '[non-string message]';
+          console.warn('[WS] Invalid message from server', {
+            error: error instanceof Error ? error.message : String(error),
+            preview,
+          });
         }
       };
     }, 0);
   }, [url, autoReconnect, maxReconnectDelay]);
 
   // ─── Server message dispatcher ──────────────
-  function handleServerMessage(type: string, payload: any) {
+  function handleServerMessage(type: string, payload: any = {}) {
     switch (type) {
       case 'connected':
-        console.log('[WS]', payload.message);
+        console.log('[WS]', payload?.message ?? 'Connected');
         break;
 
       case 'session_started':
-        sessionIdRef.current = payload.session_id;
-        cbRef.current.onSessionStarted?.(payload.session_id);
+        sessionIdRef.current = payload?.session_id ?? null;
+        if (payload?.session_id) cbRef.current.onSessionStarted?.(payload.session_id);
         break;
 
       case 'stage':
-        setCurrentStage(payload.stage);
-        cbRef.current.onStageChange?.(payload.stage);
+        setCurrentStage(payload?.stage ?? null);
+        if (payload?.stage) cbRef.current.onStageChange?.(payload.stage);
         break;
 
       case 'llm_text':
-        cbRef.current.onLLMText?.(payload.text, payload.llmTime);
+        if (typeof payload?.text === 'string') {
+          cbRef.current.onLLMText?.(payload.text, payload.llmTime ?? 0);
+        }
         break;
 
       case 'tts_audio':
-        cbRef.current.onTTSAudio?.(
-          payload.audio,
-          payload.duration,
-          payload.ttsTime,
-          payload.isMock ?? false
-        );
+        if (typeof payload?.audio === 'string') {
+          cbRef.current.onTTSAudio?.(
+            payload.audio,
+            typeof payload.duration === 'number' ? payload.duration : 0,
+            payload.ttsTime ?? 0,
+            payload.isMock ?? false
+          );
+        }
         break;
 
       case 'tts_chunk':
-        cbRef.current.onTTSChunk?.(payload.chunkBase64 ?? null, payload.isFirst ?? false, payload.isFinal ?? false);
+        cbRef.current.onTTSChunk?.(payload?.chunkBase64 ?? null, payload?.isFirst ?? false, payload?.isFinal ?? false);
         break;
 
       case 'lipsync_blendshapes':
-        cbRef.current.onLipSync?.(payload.blendshapes, payload.lipsyncTime, payload.timeline, payload.isMock ?? false);
+        if (Array.isArray(payload?.blendshapes)) {
+          cbRef.current.onLipSync?.(payload.blendshapes, payload.lipsyncTime ?? 0, payload.timeline, payload.isMock ?? false);
+        }
         break;
 
       case 'pipeline_complete':
         setCurrentStage(null);
-        cbRef.current.onPipelineComplete?.(
-          payload.totalTime,
-          payload.breakdown
-        );
+        cbRef.current.onPipelineComplete?.(payload?.totalTime ?? 0, payload?.breakdown ?? {});
         break;
 
       case 'interrupted':
@@ -239,17 +260,17 @@ export function useALIAWebSocket(
 
       case 'message_received':
         // Server acknowledged message receipt
-        console.log('[WS] Message acknowledged, id:', payload.message_id);
+        console.log('[WS] Message acknowledged, id:', payload?.message_id);
         break;
 
       case 'compliance':
         // Compliance evaluation result (informational)
-        console.log('[WS] Compliance:', payload.isCompliant ? '✅ Pass' : '❌ Fail', payload.reason || '');
+        console.log('[WS] Compliance:', payload?.isCompliant ? '✅ Pass' : '❌ Fail', payload?.reason || '');
         break;
 
       case 'error':
         setCurrentStage(null);
-        cbRef.current.onError?.(payload.message);
+        cbRef.current.onError?.(payload?.message || 'Unknown websocket error');
         break;
 
       default:

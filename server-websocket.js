@@ -284,13 +284,56 @@ async function handleChat(ws, { message }) {
       throw new Error(`Remix backend error: ${response.statusText}`);
     }
 
-    const data = await response.json();
+    const result = await response.json();
+    if (!result?.success || !result?.data) {
+      throw new Error(result?.error || 'Invalid API response shape');
+    }
+
+    const data = result.data;
+    const metadata = data.metadata || {};
 
     // Send orchestration results back through WebSocket
-    send(ws, 'stage', { stage: 'orchestration_complete', duration: data.metadata?.totalTime });
-    send(ws, 'llm_text', { text: data.text, llmTime: data.metadata?.llmTime });
-    send(ws, 'compliance', { isCompliant: data.isCompliant, reason: data.complianceReason });
-    send(ws, 'pipeline_complete', { totalTime: data.metadata?.totalTime, breakdown: data.metadata });
+    send(ws, 'stage', {
+      stage: 'orchestration_complete',
+      duration: metadata.totalTime ?? 0,
+    });
+
+    send(ws, 'compliance', {
+      isCompliant: data.isCompliant !== false,
+      reason: data.complianceReason,
+      tier: data.complianceTier ?? null,
+    });
+
+    if (typeof data.text === 'string' && data.text.length > 0) {
+      send(ws, 'llm_text', {
+        text: data.text,
+        llmTime: metadata.llmTime ?? 0,
+      });
+    }
+
+    if (typeof data.audio === 'string' && data.audio.length > 0) {
+      send(ws, 'tts_audio', {
+        audio: data.audio,
+        duration: typeof data.duration === 'number' ? data.duration : 0,
+        ttsTime: metadata.ttsTime ?? 0,
+        isMock: data.isMock === true,
+      });
+      send(ws, 'tts_done', { durationMs: metadata.ttsTime ?? 0 });
+    }
+
+    if (Array.isArray(data.blendshapes) && data.blendshapes.length > 0) {
+      send(ws, 'lipsync_blendshapes', {
+        blendshapes: data.blendshapes,
+        lipsyncTime: metadata.lipsyncTime ?? 0,
+        timeline: null,
+        isMock: data.isMock === true,
+      });
+    }
+
+    send(ws, 'pipeline_complete', {
+      totalTime: metadata.totalTime ?? 0,
+      breakdown: metadata,
+    });
   } catch (error) {
     console.error('[WS] Orchestration error:', error.message);
     send(ws, 'error', { message: `Orchestration failed: ${error.message}` });
