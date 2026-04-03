@@ -268,6 +268,7 @@ export function generateMockBlendshapes(audioBase64, durationSec) {
   return frames;
 }
 
+/** @deprecated Audio2Face removed. Use wordBoundariesToVisemes() for Azure TTS. */
 export async function runLipSync(audioBase64, language = 'en-US', options = {}) {
   const nvidiaApiKey = options.nvidiaApiKey || process.env.NVIDIA_API_KEY || '';
   const audio2faceUrl = options.audio2faceUrl || DEFAULT_AUDIO2FACE_URL;
@@ -415,4 +416,26 @@ export function alignmentToVisemes(alignment, language = 'en-US') {
   const seen = new Map();
   for (const f of frames) seen.set(f.timestamp, f);
   return [...seen.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+export function wordBoundariesToVisemes(wordBoundaries, language = 'en-US') {
+  if (!Array.isArray(wordBoundaries) || wordBoundaries.length === 0) return [];
+
+  const fakeAlignment = {
+    characters: wordBoundaries.flatMap((wb) => String(wb.word || '').toLowerCase().split('')),
+    character_start_times_seconds: wordBoundaries.flatMap((wb) => {
+      const word = String(wb.word || '');
+      const startSec = Number(wb.audioOffset || 0) / 10_000_000;
+      const charDur = (Number(wb.duration || 0) / 10_000_000) / Math.max(1, word.length);
+      return word.split('').map((_, ci) => startSec + ci * charDur);
+    }),
+    character_end_times_seconds: wordBoundaries.flatMap((wb) => {
+      const word = String(wb.word || '');
+      const startSec = Number(wb.audioOffset || 0) / 10_000_000;
+      const charDur = (Number(wb.duration || 0) / 10_000_000) / Math.max(1, word.length);
+      return word.split('').map((_, ci) => startSec + (ci + 1) * charDur);
+    }),
+  };
+
+  return alignmentToVisemes(fakeAlignment, language);
 }
