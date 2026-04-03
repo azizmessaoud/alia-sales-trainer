@@ -102,8 +102,8 @@ import { NvidiaNIM } from './nvidia-nim.server';
 import { evaluateCompliance, buildComplianceInterruptionText } from './compliance-gate.server';
 import { MemoryOS, type RepProfile } from './memory-os.server';
 import { RAGPipeline } from './rag-pipeline.server';
-import { runTTS, runTTSStreaming, runTTSWithTimestamps } from './tts.server';
-import { alignmentToVisemes, generateMockBlendshapes } from './lipsync.server';
+import { runTTS } from './tts.server';
+import { wordBoundariesToVisemes } from './lipsync.server';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 type SupportedLanguage = 'en-US' | 'fr-FR' | 'ar-SA' | 'es-ES';
@@ -452,112 +452,34 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
     if (!state.llmResponse) throw new Error('No LLM response for TTS');
 
     const session = state.session;
+    const language = (session?.language as SupportedLanguage) || state.language || 'en-US';
+    const ttsResult = await runTTS(state.llmResponse, session as any);
+    const blendshapes = Array.isArray((ttsResult as any).wordBoundaries) && (ttsResult as any).wordBoundaries.length > 0
+      ? wordBoundariesToVisemes((ttsResult as any).wordBoundaries, language)
+      : [];
+    const ttsDuration = Date.now() - start;
 
-    // Phase 3: Promise.allSettled parallel path (if both flags enabled)
-    if (useStreaming && useLipsync) {
-      const [streamRes, tsRes] = await Promise.allSettled([
-        runTTSStreaming(state.llmResponse, session as any),
-        runTTSWithTimestamps(state.llmResponse, session as any),
-      ]);
-
-      if (streamRes.status === 'fulfilled' && streamRes.value?.getReader && state.onUpdate) {
-        try {
-          const reader = streamRes.value.getReader();
-          let isFirst = true;
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              state.onUpdate({ type: 'tts_chunk', payload: { chunkBase64: null, isFirst: false, isFinal: true } });
-              break;
-            }
-
-            state.onUpdate({
-              type: 'tts_chunk',
-              payload: {
-                chunkBase64: Buffer.from(value).toString('base64'),
-                isFirst,
-                isFinal: false,
-              },
-            });
-            isFirst = false;
-          }
-        } catch (streamErr) {
-          console.warn('⚠️ ttsNode stream read failed:', (streamErr as Error).message);
-        }
-      }
-
-      // audioBase64 from tsRes (full audio) or fallback runTTS
-      let audioBase64: string;
-      let isMock = false;
-      let blendshapes: any[] = [];
-      let provider = 'unknown';
-
-      if (tsRes.status === 'fulfilled' && tsRes.value?.audioBase64) {
-        audioBase64 = tsRes.value.audioBase64;
-        provider = 'provider' in tsRes.value
-          ? ((tsRes.value.provider as string) || 'elevenlabs')
-          : 'elevenlabs';
-        // blendshapes from alignment or mock fallback
-        if (tsRes.value.alignment) {
-          blendshapes = alignmentToVisemes(tsRes.value.alignment, state.language ?? 'en-US');
-        } else {
-          blendshapes = generateMockBlendshapes(audioBase64, tsRes.value.duration);
-          isMock = true;
-        }
-      } else {
-        // Fallback to sequential runTTS
-        const fallbackResult = await runTTS(state.llmResponse, session as any);
-        audioBase64 = fallbackResult.audioBase64;
-        isMock = fallbackResult.isMock;
-        provider = 'provider' in fallbackResult
-          ? ((fallbackResult.provider as string) || 'unknown')
-          : (fallbackResult.isMock ? 'mock' : 'elevenlabs');
-        blendshapes = generateMockBlendshapes(audioBase64, fallbackResult.duration);
-      }
-
-      const duration = Date.now() - start;
-      if (state.onUpdate) {
-        state.onUpdate({
-          type: 'tts_audio',
-          payload: { audio: audioBase64, duration, ttsTime: duration, isMock, provider },
-        });
-      }
-
-      return {
-        audioBase64,
-        audioDuration: tsRes.status === 'fulfilled' && typeof tsRes.value?.duration === 'number'
-          ? tsRes.value.duration
-          : undefined,
-        provider,
-        blendshapes,
-        isMock,
-        metrics: { ...state.metrics, ttsTime: duration, lipsyncTime: 0 },
-      };
-    } else {
-      // Compatibility path — existing tests pass through here
-      const ttsResult = await runTTS(state.llmResponse, session as any);
-      const frames = generateMockBlendshapes(ttsResult.audioBase64, ttsResult.duration);
-      const provider = 'provider' in ttsResult
-        ? ((ttsResult.provider as string) || 'unknown')
-        : (ttsResult.isMock ? 'mock' : 'elevenlabs');
-
-      const duration = Date.now() - start;
-      if (state.onUpdate) {
-        state.onUpdate({
-          type: 'tts_audio',
-          payload: { audio: ttsResult.audioBase64, duration, ttsTime: duration, isMock: ttsResult.isMock, provider },
-        });
-      }
-
-      return {
-        audioBase64: ttsResult.audioBase64,
-        audioDuration: ttsResult.duration,
-        provider,
-        blendshapes: frames,
-        isMock: ttsResult.isMock,
-        metrics: { ...state.metrics, ttsTime: duration, lipsyncTime: 0 },
-      };
+    if (state.onUpdate) {
+      state.onUpdate({
+        type: 'tts_audio',
+        payload: {
+          audio: ttsResult.audioBase64,
+          duration: ttsResult.duration,
+          ttsTime: ttsDuration,
+          isMock: ttsResult.isMock,
+          provider: ttsResult.provider || 'unknown',
+        },
+      });
     }
+
+    return {
+      audioBase64: ttsResult.audioBase64,
+      audioDuration: ttsResult.duration,
+      provider: ttsResult.provider || 'unknown',
+      blendshapes,
+      isMock: ttsResult.isMock,
+      metrics: { ...state.metrics, ttsTime: ttsDuration, lipsyncTime: 0 },
+    };
   } catch (error) {
     return {
       error: `TTS failed: ${error instanceof Error ? error.message : String(error)}`,
