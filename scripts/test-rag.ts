@@ -41,7 +41,7 @@ async function search(query: string, limit: number = 3): Promise<SearchResult[]>
     limit,
     with_payload: true,
   });
-  return results as SearchResult[];
+  return results as unknown as SearchResult[];
 }
 
 async function runTests() {

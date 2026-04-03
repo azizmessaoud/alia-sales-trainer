@@ -4,18 +4,16 @@
  * Features: Voice input (Web Speech API), Audio output (TTS), Lip-sync animation
  */
 
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import type { MetaFunction } from '@remix-run/node';
 import { Avatar } from '~/components/Avatar';
 import { ChatInput } from '~/components/ChatInput';
 import { SessionHUD, type SessionMetrics } from '~/components/SessionHUD';
 import type { AvatarHandle } from '~/components/Avatar';
+import { AvatarContainer } from '~/components/AvatarContainer';
 import { useALIAWebSocket } from '~/hooks/useALIAWebSocket';
+import { useHydrated } from '~/hooks/useHydrated';
 import type { Blendshape } from '~/hooks/useALIAWebSocket';
-
-const TalkingHeadAvatar = lazy(() =>
-  import('~/components/TalkingHeadAvatar.client').then((m) => ({ default: m.TalkingHeadAvatar }))
-);
 
 export const meta: MetaFunction = () => {
   return [
@@ -60,6 +58,9 @@ function detectAudioMime(bytes: Uint8Array): string {
 }
 
 export default function Index() {
+  // Client-side hydration check (only render client components after hydration)
+  const hydrated = useHydrated();
+
   // State
   const [sessionId, setSessionId] = useState('loading');
   const [isLoading, setIsLoading] = useState(false);
@@ -792,14 +793,14 @@ export default function Index() {
               )}
             </div>
             <div style={{ height: '400px', position: 'relative' }}>
-              <Suspense fallback={<div style={{ height: '100%', display: 'grid', placeItems: 'center', color: 'rgba(255,255,255,0.6)' }}>Loading avatar...</div>}>
-                <TalkingHeadAvatar
+              {hydrated && (
+                <AvatarContainer
                   audioBase64={currentAudio}
                   language={sessionLanguage}
                   avatarUrl="/avatars/femal.glb"
                   isActive={isSpeaking}
                 />
-              </Suspense>
+              )}
               {lipSyncDebug && (
                 <div style={{
                   position: 'absolute',

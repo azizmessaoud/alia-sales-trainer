@@ -9,7 +9,7 @@ interface Props {
   isActive?: boolean;
 }
 
-export function TalkingHeadAvatar({
+function TalkingHeadAvatar({
   audioBase64,
   language = 'en-US',
   avatarUrl = '/avatars/alia.glb',
@@ -17,54 +17,77 @@ export function TalkingHeadAvatar({
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<any>(null);
+  const initializingRef = useRef(false);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current || initializingRef.current) return;
 
     let cancelled = false;
+    initializingRef.current = true;
 
-    import('@met4citizen/talkinghead').then(({ TalkingHead }) => {
-      if (cancelled || !containerRef.current) return;
+    const initTalkingHead = async () => {
+      try {
+        const module = await import('@met4citizen/talkinghead');
+        const { TalkingHead } = module;
 
-      headRef.current = new TalkingHead(containerRef.current, {
-        ttsEndpoint: null,
-        cameraView: 'upper',
-        avatarMood: 'neutral',
-      });
+        if (cancelled || !containerRef.current) return;
 
-      headRef.current.showAvatar({ url: avatarUrl }, () => {
+        headRef.current = new TalkingHead(containerRef.current, {
+          ttsEndpoint: null,
+          cameraView: 'upper',
+          avatarMood: 'neutral',
+        });
+
+        // showAvatar returns a promise or void, handle both cases
+        const showPromise = headRef.current.showAvatar({ url: avatarUrl });
+        if (showPromise && typeof showPromise.then === 'function') {
+          await showPromise;
+        }
         console.log('[ALIA] TalkingHead ready');
-      });
-    }).catch((error: Error) => {
-      console.warn('[TalkingHead] init error:', error.message);
-    });
+      } catch (error) {
+        console.warn('[TalkingHead] init error:', error instanceof Error ? error.message : String(error));
+      }
+    };
+
+    initTalkingHead();
 
     return () => {
       cancelled = true;
-      headRef.current?.stopSpeaking?.();
+      if (headRef.current?.stopSpeaking) {
+        headRef.current.stopSpeaking();
+      }
     };
   }, [avatarUrl]);
 
   useEffect(() => {
-    if (!audioBase64 || !headRef.current) return;
+    if (!audioBase64 || !headRef.current?.speakAudio) return;
 
-    const binary = atob(audioBase64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
+    const handleAudio = async () => {
+      try {
+        const binary = atob(audioBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
 
-    const blob = new Blob([bytes], { type: 'audio/mpeg' });
-    const url = URL.createObjectURL(blob);
+        const blob = new Blob([bytes], { type: 'audio/mpeg' });
+        const url = URL.createObjectURL(blob);
 
-    headRef.current
-      .speakAudio(url, { lang: language })
-      .catch((error: Error) => {
-        console.warn('[TalkingHead] speakAudio error:', error.message);
-      })
-      .finally(() => {
-        URL.revokeObjectURL(url);
-      });
+        try {
+          // speakAudio might return a promise or void
+          const result = headRef.current.speakAudio(url, { lang: language });
+          if (result && typeof result.then === 'function') {
+            await result;
+          }
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      } catch (error) {
+        console.warn('[TalkingHead] speakAudio error:', error instanceof Error ? error.message : String(error));
+      }
+    };
+
+    handleAudio();
   }, [audioBase64, language]);
 
   return (
@@ -75,3 +98,5 @@ export function TalkingHeadAvatar({
     />
   );
 }
+
+export default TalkingHeadAvatar;
