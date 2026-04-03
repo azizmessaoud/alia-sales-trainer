@@ -324,6 +324,7 @@ async function handleChat(ws, { message }) {
         audio: hasAudioPayload ? data.audio : '',
         duration: typeof data.duration === 'number' ? data.duration : 0,
         ttsTime: metadata.ttsTime ?? 0,
+        provider: data.provider || 'unknown',
         isMock: isMockAudio,
       });
       send(ws, 'tts_done', { durationMs: metadata.ttsTime ?? 0 });

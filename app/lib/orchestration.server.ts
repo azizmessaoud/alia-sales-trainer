@@ -163,6 +163,7 @@ export interface OrchestrationState {
   llmResponse?: string;
   audioBase64?: string;
   audioDuration?: number;
+  provider?: string;
   isMock?: boolean;
   blendshapes?: Array<{
     timestamp: number;
@@ -210,6 +211,7 @@ const StateAnnotation = Annotation.Root({
   llmResponse: Annotation<string | undefined>(),
   audioBase64: Annotation<string | undefined>(),
   audioDuration: Annotation<number | undefined>(),
+  provider: Annotation<string | undefined>(),
   isMock: Annotation<boolean | undefined>(),
   blendshapes: Annotation<any[] | undefined>(),
   stage: Annotation<'compliance' | 'memory' | 'llm' | 'tts' | 'complete' | 'error'>(),
@@ -488,14 +490,18 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
       let audioBase64: string;
       let isMock = false;
       let blendshapes: any[] = [];
+      let provider = 'unknown';
 
       if (tsRes.status === 'fulfilled' && tsRes.value?.audioBase64) {
         audioBase64 = tsRes.value.audioBase64;
+        provider = 'provider' in tsRes.value
+          ? ((tsRes.value.provider as string) || 'elevenlabs')
+          : 'elevenlabs';
         // blendshapes from alignment or mock fallback
         if (tsRes.value.alignment) {
           blendshapes = alignmentToVisemes(tsRes.value.alignment, state.language ?? 'en-US');
         } else {
-          blendshapes = generateMockBlendshapes(audioBase64);
+          blendshapes = generateMockBlendshapes(audioBase64, tsRes.value.duration);
           isMock = true;
         }
       } else {
@@ -503,19 +509,26 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
         const fallbackResult = await runTTS(state.llmResponse, session as any);
         audioBase64 = fallbackResult.audioBase64;
         isMock = fallbackResult.isMock;
-        blendshapes = generateMockBlendshapes(audioBase64);
+        provider = 'provider' in fallbackResult
+          ? ((fallbackResult.provider as string) || 'unknown')
+          : (fallbackResult.isMock ? 'mock' : 'elevenlabs');
+        blendshapes = generateMockBlendshapes(audioBase64, fallbackResult.duration);
       }
 
       const duration = Date.now() - start;
       if (state.onUpdate) {
         state.onUpdate({
           type: 'tts_audio',
-          payload: { audio: audioBase64, duration, ttsTime: duration, isMock },
+          payload: { audio: audioBase64, duration, ttsTime: duration, isMock, provider },
         });
       }
 
       return {
         audioBase64,
+        audioDuration: tsRes.status === 'fulfilled' && typeof tsRes.value?.duration === 'number'
+          ? tsRes.value.duration
+          : undefined,
+        provider,
         blendshapes,
         isMock,
         metrics: { ...state.metrics, ttsTime: duration, lipsyncTime: 0 },
@@ -523,19 +536,23 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
     } else {
       // Compatibility path — existing tests pass through here
       const ttsResult = await runTTS(state.llmResponse, session as any);
-      const frames = generateMockBlendshapes(ttsResult.audioBase64);
+      const frames = generateMockBlendshapes(ttsResult.audioBase64, ttsResult.duration);
+      const provider = 'provider' in ttsResult
+        ? ((ttsResult.provider as string) || 'unknown')
+        : (ttsResult.isMock ? 'mock' : 'elevenlabs');
 
       const duration = Date.now() - start;
       if (state.onUpdate) {
         state.onUpdate({
           type: 'tts_audio',
-          payload: { audio: ttsResult.audioBase64, duration, ttsTime: duration, isMock: ttsResult.isMock },
+          payload: { audio: ttsResult.audioBase64, duration, ttsTime: duration, isMock: ttsResult.isMock, provider },
         });
       }
 
       return {
         audioBase64: ttsResult.audioBase64,
         audioDuration: ttsResult.duration,
+        provider,
         blendshapes: frames,
         isMock: ttsResult.isMock,
         metrics: { ...state.metrics, ttsTime: duration, lipsyncTime: 0 },
@@ -669,6 +686,7 @@ export function stateToResponse(state: OrchestrationState) {
       audio: state.audioBase64,
       blendshapes: state.blendshapes,
       duration: state.audioDuration ?? Math.max(0, (state.metrics?.ttsTime ?? 0) / 1000),
+      provider: state.provider,
       isMock: state.isMock ?? false,
       isCompliant: state.isCompliant,
       complianceReason: state.complianceReason,

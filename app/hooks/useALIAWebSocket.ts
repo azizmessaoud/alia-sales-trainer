@@ -44,7 +44,7 @@ export interface UseALIAWebSocketOptions {
   /** Fired when LLM text arrives (display immediately) */
   onLLMText?: (text: string, llmTime: number) => void;
   /** Fired when TTS audio arrives (start playback, or browser TTS if mock) */
-  onTTSAudio?: (audioBase64: string, duration: number, ttsTime: number, isMock: boolean) => void;
+  onTTSAudio?: (audioBase64: string, duration: number, ttsTime: number, isMock: boolean, provider?: string) => void;
   /** Fired when TTS stream chunk arrives (for Web Audio queue scheduling) */
   onTTSChunk?: (chunkBase64: string | null, isFirst: boolean, isFinal: boolean) => void;
   /** Fired when lip-sync blendshapes arrive (animate avatar) */
@@ -229,7 +229,8 @@ export function useALIAWebSocket(
             payload.audio,
             typeof payload.duration === 'number' ? payload.duration : 0,
             payload.ttsTime ?? 0,
-            payload.isMock ?? false
+            payload.isMock ?? false,
+            payload.provider ?? 'unknown'
           );
         }
         break;
@@ -340,7 +341,9 @@ export function useALIAWebSocket(
 
   const endSession = useCallback(() => {
     if (sessionIdRef.current) {
-      sendJSON('end_session', { session_id: sessionIdRef.current });
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        sendJSON('end_session', { session_id: sessionIdRef.current });
+      }
       sessionIdRef.current = null;
     }
   }, [sendJSON]);

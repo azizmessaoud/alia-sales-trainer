@@ -93,10 +93,17 @@ export function buildVisemeTimeline(frames) {
   return { visemes, vtimes, vdurations };
 }
 
-export function generateMockBlendshapes(audioBase64) {
+export function generateMockBlendshapes(audioBase64, durationSec) {
   const rawBytes = (audioBase64.length * 3) / 4;
-  const durationMs = (rawBytes / (16000 * 2)) * 1000;
-  const cappedMs = Math.min(durationMs, 15000);
+  const estimatedMs = (rawBytes / (16000 * 2)) * 1000;
+  const durationMs = Math.max(
+    1200,
+    Math.round(
+      (typeof durationSec === 'number' && Number.isFinite(durationSec)
+        ? durationSec * 1000
+        : estimatedMs)
+    )
+  );
   const frames = [];
 
   const PHONEMES = [
@@ -123,7 +130,7 @@ export function generateMockBlendshapes(audioBase64) {
   const syllables = [];
   let cursor = 60 + rand() * 80;
   let syllableIndex = 0;
-  while (cursor < cappedMs - 120) {
+  while (cursor < durationMs - 120) {
     const stress = 0.3 + rand() * 0.7;
     const dur = 100 + stress * 160 + rand() * 80;
     const phoneme = PHONEMES[Math.floor(rand() * PHONEMES.length)];
@@ -142,7 +149,7 @@ export function generateMockBlendshapes(audioBase64) {
   const breathCycle = 3200 + rand() * 1000;
   const breathPhase = rand() * Math.PI * 2;
 
-  for (let ts = 0; ts < cappedMs; ts += 20) {
+  for (let ts = 0; ts < durationMs; ts += 20) {
     let envelope = 0;
     let ph = null;
     let nextPh = null;

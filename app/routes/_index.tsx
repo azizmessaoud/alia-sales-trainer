@@ -39,6 +39,22 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
+function detectAudioMime(bytes: Uint8Array): string {
+  if (bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
+    return 'audio/wav';
+  }
+
+  if (bytes.length >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) {
+    return 'audio/mpeg';
+  }
+
+  if (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0) {
+    return 'audio/mpeg';
+  }
+
+  return 'audio/mpeg';
+}
+
 export default function Index() {
   // State
   const [sessionId, setSessionId] = useState('loading');
@@ -101,9 +117,10 @@ export default function Index() {
       },
 
       // Stage 2 arrives: play audio (or browser TTS if mock)
-      onTTSAudio: (audioBase64, duration, ttsTime, isMock) => {
+      onTTSAudio: (audioBase64, duration, ttsTime, isMock, provider) => {
         console.log(`✅ TTS [${ttsTime}ms]: ${duration.toFixed(2)}s audio${isMock ? ' (mock → browser TTS)' : ''}`);
         console.log('   └─ TTS Response details:', {
+          provider: provider || 'unknown',
           isMock,
           duration,
           audioSize: audioBase64 ? audioBase64.length : 0,
@@ -118,7 +135,7 @@ export default function Index() {
           usingBrowserTTSRef.current = true;
           speakWithBrowserTTS(lastLLMTextRef.current);
         } else {
-          console.log('🔊 Using NVIDIA TTS audio');
+          console.log(`🔊 Using ${provider || 'azure-speech'} TTS audio`);
           usingBrowserTTSRef.current = false;
           playAudio(audioBase64, duration);
         }
@@ -296,8 +313,9 @@ export default function Index() {
       const audioBytes = base64ToUint8Array(audioBase64);
       console.log('   └─ Decoded audio bytes:', audioBytes.length);
 
-      const blob = new Blob([audioBytes as BlobPart], { type: 'audio/wav' });
-      console.log('   └─ Blob created, size:', blob.size, 'bytes');
+      const mimeType = detectAudioMime(audioBytes);
+      const blob = new Blob([audioBytes as BlobPart], { type: mimeType });
+      console.log('   └─ Blob created, size:', blob.size, 'bytes', 'mime:', mimeType);
 
       const url = URL.createObjectURL(blob);
       objectUrlRef.current = url;
