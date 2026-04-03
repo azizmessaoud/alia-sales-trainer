@@ -29,6 +29,7 @@
     "@langchain/core": "^0.1.63",
     "@langchain/langgraph": "^0.0.12",
     "@langchain/openai": "^0.0.20",
+    "@met4citizen/talkinghead": "^1.7.0",
     "@qdrant/js-client-rest": "^1.17.0",
     "@remix-run/node": "^2.8.1",
     "@remix-run/react": "^2.8.1",

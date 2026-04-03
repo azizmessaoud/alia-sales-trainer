@@ -4,7 +4,7 @@
  * Features: Voice input (Web Speech API), Audio output (TTS), Lip-sync animation
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import type { MetaFunction } from '@remix-run/node';
 import { Avatar } from '~/components/Avatar';
 import { ChatInput } from '~/components/ChatInput';
@@ -12,6 +12,10 @@ import { SessionHUD, type SessionMetrics } from '~/components/SessionHUD';
 import type { AvatarHandle } from '~/components/Avatar';
 import { useALIAWebSocket } from '~/hooks/useALIAWebSocket';
 import type { Blendshape } from '~/hooks/useALIAWebSocket';
+
+const TalkingHeadAvatar = lazy(() =>
+  import('~/components/TalkingHeadAvatar.client').then((m) => ({ default: m.TalkingHeadAvatar }))
+);
 
 export const meta: MetaFunction = () => {
   return [
@@ -73,6 +77,7 @@ export default function Index() {
   const [sessionStatus, setSessionStatus] = useState<'active' | 'paused' | 'completed'>('active');
   const [error, setError] = useState<string | null>(null);
   const [sessionLanguage, setSessionLanguage] = useState<string>('en-US');
+  const [currentAudio, setCurrentAudio] = useState<string | null>(null);
   const [lipSyncDebug, setLipSyncDebug] = useState<{ jawMin: number; jawMax: number; jawCurrent: number; speakingFactor: number; elapsedMs: number; frameIndex: number; frameCount: number; isPlaying: boolean; clockSource: string; offsetMs: number; peakJaw: number; peakFrame: number; peakElapsed: number; appliedTargets: number } | null>(null);
 
   // Refs
@@ -126,6 +131,10 @@ export default function Index() {
           audioSize: audioBase64 ? audioBase64.length : 0,
           audioPreview: audioBase64 ? audioBase64.substring(0, 50) + '...' : 'null',
         });
+
+        setCurrentAudio(audioBase64);
+        setIsSpeaking(true);
+        window.setTimeout(() => setIsSpeaking(false), Math.max(400, Math.round(duration * 1000)));
 
         // Stamp the clock for BOTH paths so onLipSync never divides by a stale 0
         ttsStartTimeRef.current = performance.now();
@@ -783,12 +792,14 @@ export default function Index() {
               )}
             </div>
             <div style={{ height: '400px', position: 'relative' }}>
-              <Avatar
-                ref={avatarRef}
-                modelUrl="/avatars/femal.glb"
-                isSpeaking={isSpeaking}
-                emotion={metrics.confidence > 70 ? 'happy' : metrics.confidence > 50 ? 'neutral' : 'thinking'}
-              />
+              <Suspense fallback={<div style={{ height: '100%', display: 'grid', placeItems: 'center', color: 'rgba(255,255,255,0.6)' }}>Loading avatar...</div>}>
+                <TalkingHeadAvatar
+                  audioBase64={currentAudio}
+                  language={sessionLanguage}
+                  avatarUrl="/avatars/femal.glb"
+                  isActive={isSpeaking}
+                />
+              </Suspense>
               {lipSyncDebug && (
                 <div style={{
                   position: 'absolute',
