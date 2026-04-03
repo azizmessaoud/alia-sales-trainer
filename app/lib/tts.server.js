@@ -1,12 +1,20 @@
 /**
  * Shared TTS pipeline helpers for the WebSocket gateway.
- * Provider order: ElevenLabs -> NVIDIA FastPitch -> mock WAV.
+ * Provider order: Azure Speech -> NVIDIA FastPitch -> mock WAV.
  */
 
-import { alignmentToVisemes } from './lipsync.server.js';
 import { synthesizeAzure } from './tts-azure.server.js';
 
-const ELEVENLABS_BASE_URL = 'https://api.elevenlabs.io';
+const AZURE_VOICE_MAP = {
+  'en-US': 'en-US-JennyNeural',
+  'fr-FR': 'fr-FR-DeniseNeural',
+  'ar-SA': 'ar-SA-ZariyahNeural',
+  'es-ES': 'es-ES-ElviraNeural',
+};
+
+function getAzureVoice(language) {
+  return AZURE_VOICE_MAP[language] ?? AZURE_VOICE_MAP['en-US'];
+}
 
 /**
  * Parse a WAV buffer's RIFF header to compute actual duration in seconds.
@@ -90,155 +98,40 @@ function bcp47ToISO639(tag) {
 }
 
 /**
- * ELEVENLABS: TTS with Timestamps (for lip-sync alignment)
- * Returns audio + alignment + converted blendshapes for 30fps animation
- * NOTE: /with-timestamps is a PAID feature; free tier uses fallback
+ * Single-entry TTS chain: Azure -> NVIDIA -> mock.
  */
-let elevenLabsPaymentGuard = false; // Track 402 errors to prevent retry spam
-
-export async function runTTSWithTimestamps(text, session = null, options = {}) {
-  const voices = getActiveVoice(session);
-  const apiKey = options.elevenLabsApiKey || process.env.ELEVENLABS_API_KEY || '';
-  const modelId = options.elevenLabsModelId || process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2';
-
-  try {
-    if (!apiKey || !voices.elevenLabsVoiceId) {
-      throw new Error('ElevenLabs credentials missing');
-    }
-
-    // If we've seen a 402 before, skip directly to fallback
-    if (elevenLabsPaymentGuard) {
-      throw new Error('ElevenLabs /with-timestamps requires paid plan (see previous logs)');
-    }
-
-    const resp = await fetch(`${ELEVENLABS_BASE_URL}/v1/text-to-speech/${voices.elevenLabsVoiceId}/with-timestamps`, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        text,
-        model_id: modelId,
-        language_code: voices.languageCode,
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-      }),
-    });
-
-    if (!resp.ok) {
-      // Special handling for 402: Payment Required
-      if (resp.status === 402) {
-        elevenLabsPaymentGuard = true;
-        console.warn(`❌ ElevenLabs /with-timestamps requires PAID plan (Creator+)`);
-        console.warn(`   Free tier has no access to /with-timestamps endpoint.`);
-        console.warn(`   Falling back to NVIDIA TTS or mock audio.`);
-        console.warn(`   To enable: upgrade ElevenLabs account at https://elevenlabs.io`);
-        // Fall through to catch block
-      }
-      throw new Error(`ElevenLabs /with-timestamps HTTP ${resp.status}`);
-    }
-
-    const data = await resp.json();
-    const audioBuffer = Buffer.from(data.audio_base64, 'base64');
-    const duration = parseWavDuration(audioBuffer);
-
-    // Convert ElevenLabs character alignment to 30fps blendshape frames
-    let blendshapes = [];
-    if (data.alignment && Array.isArray(data.alignment.characters) && data.alignment.characters.length > 0) {
-      try {
-        blendshapes = alignmentToVisemes(data.alignment, session?.language || process.env.DEFAULT_LANGUAGE || 'en-US');
-        console.log(`  ✅ ElevenLabs alignment → ${blendshapes.length} blendshape frames`);
-      } catch (alignErr) {
-        console.warn('⚠️ Alignment conversion failed, using alignment raw:', alignErr.message);
-      }
-    }
-
-    return {
-      audioBase64: data.audio_base64,
-      alignment: data.alignment,
-      blendshapes,
-      duration,
-      isMock: false,
-    };
-  } catch (err) {
-    // Don't spam logs for payment errors
-    if (!err.message.includes('402') && !err.message.includes('requires PAID')) {
-      console.warn(`⚠️ ElevenLabs /with-timestamps failed: ${err.message}`);
-    }
-    // Fallback to standard TTS WITHOUT re-attempting with-timestamps
-    return runTTSFallback(text, session, options);
-  }
-}
-
-/**
- * ELEVENLABS: TTS Streaming
- */
-export async function runTTSStreaming(text, session = null, options = {}) {
-  const voices = getActiveVoice(session);
-  const apiKey = options.elevenLabsApiKey || process.env.ELEVENLABS_API_KEY || '';
-  const modelId = options.elevenLabsModelId || process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2';
-
-  if (!apiKey || !voices.elevenLabsVoiceId) {
-    throw new Error('ElevenLabs credentials missing');
-  }
-
-  const resp = await fetch(`${ELEVENLABS_BASE_URL}/v1/text-to-speech/${voices.elevenLabsVoiceId}/stream`, {
-    method: 'POST',
-    headers: {
-      'xi-api-key': apiKey,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      text,
-      model_id: modelId,
-      language_code: voices.languageCode,
-      voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-    }),
-  });
-
-  if (!resp.ok) {
-    throw new Error(`ElevenLabs /stream error: ${resp.status}`);
-  }
-
-  return resp.body; // Returns a ReadableStream
-}
-
-/**
- * Clean Fallback: Try Azure -> NVIDIA -> Mock (NO re-attempt of with-timestamps)
- * Called from runTTSWithTimestamps when /with-timestamps fails
- */
-async function runTTSFallback(text, session = null, options = {}) {
-  const voices = getActiveVoice(session);
+export async function runTTS(text, session = null, options = {}) {
+  const language = session?.language || process.env.DEFAULT_LANGUAGE || 'en-US';
+  const voiceName = getAzureVoice(language);
   const azureSpeechKey = options.azureSpeechKey || process.env.AZURE_SPEECH_KEY || '';
   const azureSpeechRegion = options.azureSpeechRegion || process.env.AZURE_SPEECH_REGION || '';
+  const voices = getActiveVoice(session);
   const nvidiaApiKey = options.nvidiaApiKey || process.env.NVIDIA_API_KEY || '';
   const nvidiaBaseUrl = options.nvidiaBaseUrl || 'https://integrate.api.nvidia.com/v1';
   const nvidiaModel = options.nvidiaModel || 'nvidia/fastpitch-hifigan';
 
-  // Try Azure Speech first when configured
+  // PRIMARY: Azure Speech
   if (azureSpeechKey && azureSpeechRegion) {
     try {
-      console.log(`[TTS] Attempting Azure Speech with key=${azureSpeechKey.substring(0, 10)}... region=${azureSpeechRegion}`);
-      const azResult = await synthesizeAzure(text, session?.language || process.env.DEFAULT_LANGUAGE || 'en-US');
+      const azResult = await synthesizeAzure(text, language, voiceName);
       if (azResult.audioBuffer?.length) {
-        const hasWordBoundaries = Array.isArray(azResult.wordBoundaries) && azResult.wordBoundaries.length > 0;
-        console.log(`✅ TTS provider: azure-speech [${azResult.voiceName}] ${azResult.audioBuffer.length} bytes`);
+        console.log(`✅ TTS: azure [${voiceName}] ${azResult.audioBuffer.length} bytes`);
         return {
           audioBase64: azResult.audioBuffer.toString('base64'),
           duration: parseWavDuration(azResult.audioBuffer),
+          wordBoundaries: azResult.wordBoundaries ?? [],
           isMock: false,
           provider: 'azure-speech',
-          ...(hasWordBoundaries ? { alignment: { words: azResult.wordBoundaries } } : {}),
         };
       }
     } catch (e) {
-      console.error('❌ Azure Speech TTS failed (will try NVIDIA):', e instanceof Error ? e.message : String(e));
+      console.error('❌ Azure TTS failed:', e instanceof Error ? e.message : String(e));
     }
   } else {
-    console.log(`[TTS] Azure not configured: key=${!!azureSpeechKey} region=${!!azureSpeechRegion}`);
+    console.warn('[TTS] Azure not configured: AZURE_SPEECH_KEY or AZURE_SPEECH_REGION missing');
   }
 
-  // Try NVIDIA first
+  // FALLBACK: NVIDIA FastPitch
   if (nvidiaApiKey) {
     try {
       const resp = await fetch(`${nvidiaBaseUrl}/audio/speech`, {
@@ -257,44 +150,29 @@ async function runTTSFallback(text, session = null, options = {}) {
       if (resp.ok) {
         const ab = await resp.arrayBuffer();
         const buf = Buffer.from(ab);
-        console.log(`  TTS provider: nvidia [fallback]`);
-        return { audioBase64: buf.toString('base64'), duration: parseWavDuration(buf), isMock: false, provider: 'nvidia' };
+        return {
+          audioBase64: buf.toString('base64'),
+          duration: parseWavDuration(buf),
+          wordBoundaries: [],
+          isMock: false,
+          provider: 'nvidia',
+        };
       }
     } catch (e) {
-      console.warn('NVIDIA TTS failed, using mock:', e.message);
+      console.warn('NVIDIA TTS failed:', e instanceof Error ? e.message : String(e));
     }
   }
 
-  // Final fallback: mock audio
+  // FINAL FALLBACK: silent WAV mock
   const wordCount = text.split(/\s+/).length;
   const duration = Math.max(1, wordCount / 2.5);
-  const silentWav = createSilentWav(duration);
-  console.log(`  TTS provider: mock [no timestamps available]`);
+  const wav = createSilentWav(duration);
   return {
-    audioBase64: silentWav.toString('base64'),
-    duration: parseWavDuration(silentWav),
+    audioBase64: wav.toString('base64'),
+    duration,
+    wordBoundaries: [],
     isMock: true,
     provider: 'mock',
   };
-}
-
-/**
- * Legacy Sequential TTS (Fallback chain)
- */
-export async function runTTS(text, session = null, options = {}) {
-  const voices = getActiveVoice(session);
-  const elevenLabsApiKey = options.elevenLabsApiKey || process.env.ELEVENLABS_API_KEY || '';
-
-  if (elevenLabsApiKey && voices.elevenLabsVoiceId) {
-    try {
-      const result = await runTTSWithTimestamps(text, session, options);
-      return result;
-    } catch (e) {
-      console.warn('⚠️ ElevenLabs TTS exhausted, using NVIDIA/mock fallback:', e.message);
-    }
-  }
-
-  // No recursion: call clean fallback instead
-  return runTTSFallback(text, session, options);
 }
 
