@@ -1,19 +1,4 @@
-// app/lib/tts-azure.server.js
-// Pure ESM — Azure REST TTS (no SDK dependency)
-
-const VOICE_MAP = {
-  en: 'en-US-JennyNeural',
-  fr: 'fr-FR-DeniseNeural',
-  ar: 'ar-TN-ReemNeural',
-  es: 'es-ES-ElviraNeural',
-};
-
-function pickVoice(lang) {
-  if (!lang) return VOICE_MAP.en;
-  const normalized = String(lang).toLowerCase();
-  const base = normalized.split('-')[0];
-  return VOICE_MAP[normalized] || VOICE_MAP[base] || VOICE_MAP.en;
-}
+import SpeechSDK from 'microsoft-cognitiveservices-speech-sdk';
 
 function escapeSsml(text) {
   return String(text)
@@ -24,7 +9,7 @@ function escapeSsml(text) {
     .replace(/'/g, '&apos;');
 }
 
-export async function synthesizeAzure(text, lang = 'en-US') {
+export async function synthesizeAzure(text, language = 'en-US', voiceName = 'en-US-JennyNeural') {
   const key = process.env.AZURE_SPEECH_KEY;
   const region = process.env.AZURE_SPEECH_REGION || 'swedencentral';
 
@@ -33,30 +18,42 @@ export async function synthesizeAzure(text, lang = 'en-US') {
     return { audioBuffer: null, wordBoundaries: [], voiceName: null };
   }
 
-  const language = lang || 'en-US';
-  const voiceName = pickVoice(language);
   const ssml = `<speak version='1.0' xml:lang='${language}'><voice name='${voiceName}'>${escapeSsml(text)}</voice></speak>`;
+  const speechConfig = SpeechSDK.SpeechConfig.fromSubscription(key, region);
+  speechConfig.speechSynthesisVoiceName = voiceName;
+  speechConfig.speechSynthesisOutputFormat =
+    SpeechSDK.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
+  speechConfig.requestWordLevelTimestamps();
 
-  const resp = await fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
-    method: 'POST',
-    headers: {
-      'Ocp-Apim-Subscription-Key': key,
-      'Content-Type': 'application/ssml+xml',
-      'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3',
-      'User-Agent': 'alia-medical-training',
-    },
-    body: ssml,
+  const synthesizer = new SpeechSDK.SpeechSynthesizer(speechConfig);
+  const wordBoundaries = [];
+
+  synthesizer.wordBoundary = (_sender, event) => {
+    wordBoundaries.push({
+      word: event?.text || '',
+      audioOffset: Number(event?.audioOffset || 0),
+      duration: Number(event?.duration || 0),
+    });
+  };
+
+  const result = await new Promise((resolve, reject) => {
+    synthesizer.speakSsmlAsync(
+      ssml,
+      (synthesisResult) => resolve(synthesisResult),
+      (error) => reject(error)
+    );
   });
 
-  if (!resp.ok) {
-    const errorText = await resp.text().catch(() => 'unknown error');
-    throw new Error(`[Azure TTS] HTTP ${resp.status}: ${errorText}`);
+  synthesizer.close();
+
+  if (result.reason !== SpeechSDK.ResultReason.SynthesizingAudioCompleted) {
+    throw new Error(`[Azure TTS] Synthesis failed with reason: ${result.reason}`);
   }
 
-  const audioData = await resp.arrayBuffer();
+  const audioData = Buffer.from(result.audioData);
   return {
-    audioBuffer: Buffer.from(audioData),
-    wordBoundaries: [],
+    audioBuffer: audioData,
+    wordBoundaries,
     voiceName,
   };
 }
