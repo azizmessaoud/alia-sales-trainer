@@ -397,11 +397,19 @@ const llmNode = async (state: OrchestrationState): Promise<Partial<Orchestration
     } else {
       const lang = (state.language ?? 'en-US') as SupportedLanguage;
       const personaPrompt = SYSTEM_PROMPTS[lang] ?? SYSTEM_PROMPTS['en-US'];
-      const ragPrompt = RAGPipeline.buildAugmentedPrompt(
-        state.userMessage,
-        state.memories || [],
-        state.repProfile || null
-      );
+      const ragPrompt = state.memoryContext?.trim()
+        ? [
+            '## Relevant Past Sessions:',
+            state.memoryContext,
+            '',
+            '## Current Question:',
+            state.userMessage,
+          ].join('\n')
+        : RAGPipeline.buildAugmentedPrompt(
+            state.userMessage,
+            state.memories || [],
+            state.repProfile || null
+          );
       const coachingHint = state.complianceTier === 2 && state.complianceReason
         ? [
             '--- COMPLIANCE COACHING HINT ---',
@@ -454,9 +462,13 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
     const session = state.session;
     const language = (session?.language as SupportedLanguage) || state.language || 'en-US';
     const ttsResult = await runTTS(state.llmResponse, session as any);
-    const blendshapes = Array.isArray((ttsResult as any).wordBoundaries) && (ttsResult as any).wordBoundaries.length > 0
-      ? wordBoundariesToVisemes((ttsResult as any).wordBoundaries, language)
+    const wordBoundaries = Array.isArray((ttsResult as any).wordBoundaries)
+      ? (ttsResult as any).wordBoundaries
       : [];
+    const blendshapes = wordBoundaries.length > 0
+      ? wordBoundariesToVisemes(wordBoundaries, language)
+      : [];
+    console.log(`[TTS] wordBoundaries: ${wordBoundaries.length} -> blendshapes: ${blendshapes.length} frames`);
     const ttsDuration = Date.now() - start;
 
     if (state.onUpdate) {

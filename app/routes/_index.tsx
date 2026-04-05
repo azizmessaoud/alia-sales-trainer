@@ -10,7 +10,6 @@ import { Avatar } from '~/components/Avatar';
 import { ChatInput } from '~/components/ChatInput';
 import { SessionHUD, type SessionMetrics } from '~/components/SessionHUD';
 import type { AvatarHandle } from '~/components/Avatar';
-import { AvatarContainer } from '~/components/AvatarContainer';
 import { useALIAWebSocket } from '~/hooks/useALIAWebSocket';
 import { useHydrated } from '~/hooks/useHydrated';
 import type { Blendshape } from '~/hooks/useALIAWebSocket';
@@ -57,6 +56,7 @@ function detectAudioMime(bytes: Uint8Array): string {
   return 'audio/mpeg';
 }
 
+
 export default function Index() {
   // Client-side hydration check (only render client components after hydration)
   const hydrated = useHydrated();
@@ -79,7 +79,8 @@ export default function Index() {
   const [error, setError] = useState<string | null>(null);
   const [sessionLanguage, setSessionLanguage] = useState<string>('en-US');
   const [currentAudio, setCurrentAudio] = useState<string | null>(null);
-  const [lipSyncDebug, setLipSyncDebug] = useState<{ jawMin: number; jawMax: number; jawCurrent: number; speakingFactor: number; elapsedMs: number; frameIndex: number; frameCount: number; isPlaying: boolean; clockSource: string; offsetMs: number; peakJaw: number; peakFrame: number; peakElapsed: number; appliedTargets: number } | null>(null);
+  const [hasUserGesture, setHasUserGesture] = useState(false);
+  const [lipSyncDebug, setLipSyncDebug] = useState<{ jawMin: number; jawMax: number; jawCurrent: number; speakingFactor: number; elapsedMs: number; frameIndex: number; frameCount: number; isPlaying: boolean; clockSource: string; offsetMs: number; peakJaw: number; peakFrame: number; peakElapsed: number; appliedTargets: number; dominantViseme: string; dominantMouth: string } | null>(null);
 
   // Refs
   const avatarRef = useRef<AvatarHandle>(null);
@@ -91,10 +92,31 @@ export default function Index() {
   const lastLLMTextRef = useRef<string>('');
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioUnlockedRef = useRef(false);
+  const audioUnlockingRef = useRef(false);
   const usingBrowserTTSRef = useRef(false);
   const ttsStartTimeRef = useRef<number>(0); // when TTS started speaking (performance.now)
   const nextChunkTimeRef = useRef<number>(0);
   const chunkBufferRef = useRef<AudioBufferSourceNode[]>([]);
+  const lastDebugUiUpdateRef = useRef<number>(0);
+
+  const dumpAnimationLog = useCallback((label: string) => {
+    const samples = avatarRef.current?.getAnimationLog?.(120) ?? [];
+    if (!samples.length) return;
+
+    const compact = samples.map((entry) => ({
+      t_ms: entry.elapsedMs,
+      frame: `${entry.frameIndex}/${entry.frameCount}`,
+      jaw: entry.jawOpen,
+      viseme: entry.dominantViseme,
+      mouth: entry.dominantMouth,
+      targets: entry.targetsApplied,
+      clock: entry.clockSource,
+    }));
+
+    console.groupCollapsed(`🎬 Animation Log (${label}) samples=${compact.length}`);
+    console.table(compact);
+    console.groupEnd();
+  }, []);
 
   // Stable audio ref callback to avoid rewiring avatar audio clock on every render.
   const bindAudioElementRef = useCallback((el: HTMLAudioElement | null) => {
@@ -163,7 +185,7 @@ export default function Index() {
       },
 
       // Stage 3 arrives: animate avatar mouth
-      onLipSync: (blendshapes, lipsyncTime, timeline, isMock) => {
+      onLipSync: (blendshapes, lipsyncTime, _timeline, isMock) => {
         console.log(`✅ LipSync [${lipsyncTime}ms]: ${blendshapes.length} frames${isMock ? ' (mock)' : ''}`);
 
         if (usingBrowserTTSRef.current) {
@@ -194,6 +216,8 @@ export default function Index() {
           peakFrame: prev?.peakFrame ?? 0,
           peakElapsed: prev?.peakElapsed ?? 0,
           appliedTargets: prev?.appliedTargets ?? 0,
+          dominantViseme: prev?.dominantViseme ?? 'viseme_sil',
+          dominantMouth: prev?.dominantMouth ?? 'jawOpen',
         }));
         // Always start from offset 0 — the audio element clock (real audio)
         // or perf clock (browser TTS) handles synchronisation inside update().
@@ -220,8 +244,10 @@ export default function Index() {
   // =====================================================
   // Audio Context Unlock (required for autoplay)
   // =====================================================
-  const unlockAudioContext = useCallback(() => {
+  const unlockAudioContext = useCallback((fromGesture: boolean = false) => {
     if (audioUnlockedRef.current) return;
+    if (!fromGesture) return;
+    if (audioUnlockingRef.current) return;
 
     try {
       if (!audioContextRef.current) {
@@ -229,18 +255,30 @@ export default function Index() {
       }
 
       if (audioContextRef.current.state === 'suspended') {
+        audioUnlockingRef.current = true;
         audioContextRef.current.resume().then(() => {
           console.log('✅ AudioContext unlocked and resumed');
           audioUnlockedRef.current = true;
+        }).catch((err) => {
+          console.warn('⚠️ AudioContext resume blocked until user gesture:', err);
+        }).finally(() => {
+          audioUnlockingRef.current = false;
         });
       } else {
         console.log('✅ AudioContext already active');
         audioUnlockedRef.current = true;
+        audioUnlockingRef.current = false;
       }
     } catch (err) {
+      audioUnlockingRef.current = false;
       console.error('❌ AudioContext unlock failed:', err);
     }
   }, []);
+
+  const handleGestureUnlock = useCallback(() => {
+    setHasUserGesture(true);
+    unlockAudioContext(true);
+  }, [unlockAudioContext]);
 
   const scheduleChunk = useCallback((bytes: Uint8Array, isFirst: boolean) => {
     if (!audioContextRef.current) return;
@@ -269,8 +307,10 @@ export default function Index() {
   useEffect(() => {
     let rafId: number;
     const poll = () => {
+      const now = performance.now();
       const stats = avatarRef.current?.getDebugStats?.();
-      if (stats) {
+      if (stats && now - lastDebugUiUpdateRef.current >= 120) {
+        lastDebugUiUpdateRef.current = now;
         setLipSyncDebug(prev =>
           prev ? {
             ...prev,
@@ -286,6 +326,8 @@ export default function Index() {
             peakFrame: stats.peakFrame,
             peakElapsed: stats.peakElapsed,
             appliedTargets: stats.appliedTargets,
+            dominantViseme: stats.dominantViseme,
+            dominantMouth: stats.dominantMouth,
           } : null
         );
       }
@@ -305,8 +347,6 @@ export default function Index() {
       console.log('   └─ Expected duration:', duration, 'seconds');
 
       // Unlock audio on first playback attempt
-      unlockAudioContext();
-
       setIsSpeaking(true);
 
       // Clean up old URL
@@ -363,6 +403,7 @@ export default function Index() {
       // Auto-stop speaking state after audio finishes
       audioElementRef.current.onended = () => {
         console.log('✅ Audio playback completed');
+        dumpAnimationLog('audio-ended');
         setIsSpeaking(false);
       };
 
@@ -401,7 +442,10 @@ export default function Index() {
       ) || voices.find(v => v.lang?.toLowerCase().startsWith(langPrefix));
       if (preferred) utterance.voice = preferred;
 
-      utterance.onend = () => setIsSpeaking(false);
+      utterance.onend = () => {
+        dumpAnimationLog('browser-tts-ended');
+        setIsSpeaking(false);
+      };
       utterance.onerror = () => setIsSpeaking(false);
 
       window.speechSynthesis.cancel();
@@ -411,7 +455,7 @@ export default function Index() {
       console.warn('⚠️ Browser TTS failed:', err);
       setIsSpeaking(false);
     }
-  }, []);
+  }, [dumpAnimationLog]);
 
   // =====================================================
   // Avatar lip-sync animation
@@ -528,14 +572,15 @@ export default function Index() {
 
     // Unlock audio on any user interaction
     const handleInteraction = () => {
-      unlockAudioContext();
+      setHasUserGesture(true);
+      unlockAudioContext(true);
     };
 
-    document.body.addEventListener('click', handleInteraction);
-    document.body.addEventListener('keydown', handleInteraction);
+    document.body.addEventListener('pointerdown', handleInteraction, { once: true });
+    document.body.addEventListener('keydown', handleInteraction, { once: true });
 
     return () => {
-      document.body.removeEventListener('click', handleInteraction);
+      document.body.removeEventListener('pointerdown', handleInteraction);
       document.body.removeEventListener('keydown', handleInteraction);
     };
   }, [unlockAudioContext]);
@@ -598,7 +643,7 @@ export default function Index() {
   // =====================================================
   const testAudio = useCallback(() => {
     console.log('🧪 Testing basic audio playback...');
-    unlockAudioContext();
+    unlockAudioContext(true);
 
     if (!audioElementRef.current) {
       console.error('❌ Audio element not found!');
@@ -641,7 +686,10 @@ export default function Index() {
       backgroundColor: '#0f0f1a',
       color: '#fff',
       fontFamily: 'system-ui, -apple-system, sans-serif',
-    }}>
+    }}
+      onMouseDown={handleGestureUnlock}
+      onTouchStart={handleGestureUnlock}
+    >
       {/* Hidden audio element for playback — also used as master clock for lip-sync */}
       <audio
         ref={bindAudioElementRef}
@@ -794,11 +842,11 @@ export default function Index() {
             </div>
             <div style={{ height: '400px', position: 'relative' }}>
               {hydrated && (
-                <AvatarContainer
-                  audioBase64={currentAudio}
-                  language={sessionLanguage}
-                  avatarUrl="/avatars/femal.glb"
-                  isActive={isSpeaking}
+                <Avatar
+                  ref={avatarRef}
+                  modelUrl="/avatars/femal.glb"
+                  emotion="neutral"
+                  isSpeaking={isSpeaking}
                 />
               )}
               {lipSyncDebug && (
@@ -819,6 +867,7 @@ export default function Index() {
                   <div>jawOpen: {lipSyncDebug.jawCurrent.toFixed(3)} &nbsp;range [{lipSyncDebug.jawMin.toFixed(3)} .. {lipSyncDebug.jawMax.toFixed(3)}]</div>
                   <div>speakingFactor: {lipSyncDebug.speakingFactor.toFixed(3)}</div>
                   <div>clock: {lipSyncDebug.clockSource} &nbsp;elapsed: {lipSyncDebug.elapsedMs.toFixed(0)}ms &nbsp;offset: {lipSyncDebug.offsetMs}ms</div>
+                  <div>viseme: {lipSyncDebug.dominantViseme} &nbsp;mouth: {lipSyncDebug.dominantMouth}</div>
                   <div>frame: {lipSyncDebug.frameIndex}/{lipSyncDebug.frameCount} &nbsp;targets: {lipSyncDebug.appliedTargets} &nbsp;playing: {lipSyncDebug.isPlaying ? 'yes' : 'no'}
                     {lipSyncDebug.isPlaying && (
                       <span style={{ marginLeft: 8, color: lipSyncDebug.frameIndex > 0 ? '#7fff7f' : '#ff7f7f' }}>

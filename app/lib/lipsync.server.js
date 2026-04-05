@@ -107,18 +107,18 @@ export function generateMockBlendshapes(audioBase64, durationSec) {
   const frames = [];
 
   const PHONEMES = [
-    { jaw: 0.65, funnel: 0.1, smile: 0.18, pucker: 0.0, stretch: 0.1, cheekSq: 0.08, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.05, tongueOut: 0.0 },
-    { jaw: 0.18, funnel: 0.0, smile: 0.5, pucker: 0.0, stretch: 0.3, cheekSq: 0.15, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.0 },
-    { jaw: 0.45, funnel: 0.5, smile: 0.0, pucker: 0.12, stretch: 0.0, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.08, tongueOut: 0.0 },
-    { jaw: 0.1, funnel: 0.65, smile: 0.0, pucker: 0.45, stretch: 0.0, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.05, close: 0.0, press: 0.0, shrugLo: 0.1, tongueOut: 0.0 },
-    { jaw: 0.35, funnel: 0.12, smile: 0.25, pucker: 0.0, stretch: 0.08, cheekSq: 0.05, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.0 },
-    { jaw: 0.06, funnel: 0.18, smile: 0.08, pucker: 0.0, stretch: 0.0, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.15, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.0 },
-    { jaw: 0.12, funnel: 0.04, smile: 0.1, pucker: 0.0, stretch: 0.05, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.12 },
-    { jaw: 0.02, funnel: 0.0, smile: 0.15, pucker: 0.0, stretch: 0.0, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.08, close: 0.6, press: 0.5, shrugLo: 0.0, tongueOut: 0.0 },
-    { jaw: 0.08, funnel: 0.0, smile: 0.2, pucker: 0.0, stretch: 0.2, cheekSq: 0.1, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.0 },
-    { jaw: 0.3, funnel: 0.05, smile: 0.1, pucker: 0.0, stretch: 0.0, cheekSq: 0.12, noseSnr: 0.08, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.06, tongueOut: 0.0 },
-    { jaw: 0.05, funnel: 0.0, smile: 0.12, pucker: 0.0, stretch: 0.0, cheekSq: 0.0, noseSnr: 0.1, rollLo: 0.0, close: 0.4, press: 0.25, shrugLo: 0.0, tongueOut: 0.0 },
-    { jaw: 0.2, funnel: 0.0, smile: 0.15, pucker: 0.0, stretch: 0.12, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.06 },
+    { jaw: 0.28, funnel: 0.1, smile: 0.18, pucker: 0.0, stretch: 0.1, cheekSq: 0.08, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.05, tongueOut: 0.0 },
+    { jaw: 0.08, funnel: 0.0, smile: 0.5, pucker: 0.0, stretch: 0.3, cheekSq: 0.15, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.0 },
+    { jaw: 0.20, funnel: 0.5, smile: 0.0, pucker: 0.12, stretch: 0.0, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.08, tongueOut: 0.0 },
+    { jaw: 0.04, funnel: 0.65, smile: 0.0, pucker: 0.45, stretch: 0.0, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.05, close: 0.0, press: 0.0, shrugLo: 0.1, tongueOut: 0.0 },
+    { jaw: 0.15, funnel: 0.12, smile: 0.25, pucker: 0.0, stretch: 0.08, cheekSq: 0.05, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.0 },
+    { jaw: 0.03, funnel: 0.18, smile: 0.08, pucker: 0.0, stretch: 0.0, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.15, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.0 },
+    { jaw: 0.06, funnel: 0.04, smile: 0.1, pucker: 0.0, stretch: 0.05, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.12 },
+    { jaw: 0.01, funnel: 0.0, smile: 0.15, pucker: 0.0, stretch: 0.0, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.08, close: 0.2, press: 0.15, shrugLo: 0.0, tongueOut: 0.0 },
+    { jaw: 0.04, funnel: 0.0, smile: 0.2, pucker: 0.0, stretch: 0.2, cheekSq: 0.1, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.0 },
+    { jaw: 0.14, funnel: 0.05, smile: 0.1, pucker: 0.0, stretch: 0.0, cheekSq: 0.12, noseSnr: 0.08, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.06, tongueOut: 0.0 },
+    { jaw: 0.02, funnel: 0.0, smile: 0.12, pucker: 0.0, stretch: 0.0, cheekSq: 0.0, noseSnr: 0.1, rollLo: 0.0, close: 0.15, press: 0.1, shrugLo: 0.0, tongueOut: 0.0 },
+    { jaw: 0.09, funnel: 0.0, smile: 0.15, pucker: 0.0, stretch: 0.12, cheekSq: 0.0, noseSnr: 0.0, rollLo: 0.0, close: 0.0, press: 0.0, shrugLo: 0.0, tongueOut: 0.06 },
   ];
 
   let seed = audioBase64.length;
@@ -226,21 +226,19 @@ export function generateMockBlendshapes(audioBase64, durationSec) {
       timestamp: Math.round(ts),
       blendshapes: {
         jawOpen: clamp(jaw),
-        mouthLowerDownLeft: clamp(jaw * 0.8 * asym),
-        mouthLowerDownRight: clamp(jaw * 0.8 / asym),
-        mouthUpperUpLeft: clamp(jaw * 0.4 * asym),
-        mouthUpperUpRight: clamp(jaw * 0.4 / asym),
+        // DISABLED: mouthLowerDown/Upper drive geometry forward unnaturally on RPM
+        // Just use jawOpen for vertical movement — it handles lip parting naturally
         mouthSmileLeft: clamp(smile * asym),
         mouthSmileRight: clamp(smile / asym),
-        mouthFunnel: clamp(funnel),
-        mouthPucker: clamp(pucker),
+        mouthFunnel: 0,
+        mouthPucker: 0,
         mouthStretchLeft: clamp(stretch * asym),
         mouthStretchRight: clamp(stretch / asym),
         mouthRollLower: clamp(rollLo),
         mouthRollUpper: clamp(rollLo * 0.3),
-        mouthClose: clamp(mClose),
-        mouthPressLeft: clamp(press * asym),
-        mouthPressRight: clamp(press / asym),
+        mouthClose: clamp(Math.min(mClose, jaw * 0.4)),  // Cap at 40% of jaw to prevent clipping
+        mouthPressLeft: clamp(Math.min(press * 0.5, jaw * 0.2) * asym),  // Reduce press, cap by jaw
+        mouthPressRight: clamp(Math.min(press * 0.5, jaw * 0.2) / asym),
         mouthShrugLower: clamp(shrugLo),
         mouthShrugUpper: clamp(shrugLo * 0.4),
         mouthFrownLeft: clamp((1 - envelope) * 0.03),
@@ -255,11 +253,11 @@ export function generateMockBlendshapes(audioBase64, durationSec) {
         browInnerUp: clamp(browUp + browMicro),
         browOuterUpLeft: clamp(browUp * 0.6 + browMicro * 0.4 + n3),
         browOuterUpRight: clamp(browUp * 0.6 + browMicro * 0.4 - n3),
-        viseme_aa: clamp(jaw > 0.3 ? envelope * 0.6 : 0),
-        viseme_O: clamp(funnel > 0.2 ? envelope * 0.5 : 0),
-        viseme_FF: clamp(jaw < 0.1 && envelope > 0.2 ? envelope * 0.3 : 0),
-        viseme_SS: clamp(jaw < 0.12 && stretch > 0.1 ? envelope * 0.25 : 0),
-        viseme_PP: clamp(mClose > 0.3 ? envelope * 0.4 : 0),
+        viseme_aa: clamp(jaw > 0.15 ? envelope * 0.6 : 0),
+        viseme_O: clamp(funnel > 0.15 ? envelope * 0.5 : 0),
+        viseme_FF: clamp(jaw < 0.08 && envelope > 0.2 ? envelope * 0.3 : 0),
+        viseme_SS: clamp(jaw < 0.08 && stretch > 0.1 ? envelope * 0.25 : 0),
+        viseme_PP: clamp(mClose > 0.08 ? envelope * 0.4 : 0),
         viseme_TH: clamp(tongueOut > 0.05 ? envelope * 0.3 : 0),
       },
     });
@@ -376,12 +374,73 @@ const CHAR_TO_VISEME_BY_LANGUAGE = {
 };
 
 const VISEME_JAW = {
-  'viseme_aa': 0.55, 'viseme_O': 0.45, 'viseme_E': 0.30,
-  'viseme_I': 0.25, 'viseme_U': 0.20, 'viseme_PP': 0.05,
-  'viseme_FF': 0.10, 'viseme_TH': 0.15, 'viseme_DD': 0.15,
-  'viseme_kk': 0.10, 'viseme_CH': 0.15, 'viseme_SS': 0.10,
-  'viseme_nn': 0.08, 'viseme_RR': 0.18, 'viseme_sil': 0.0,
+  'viseme_aa': 0.26, 'viseme_O': 0.20, 'viseme_E': 0.14,
+  'viseme_I': 0.12, 'viseme_U': 0.10, 'viseme_PP': 0.02,
+  'viseme_FF': 0.05, 'viseme_TH': 0.07, 'viseme_DD': 0.07,
+  'viseme_kk': 0.05, 'viseme_CH': 0.08, 'viseme_SS': 0.05,
+  'viseme_nn': 0.04, 'viseme_RR': 0.08, 'viseme_sil': 0.0,
 };
+
+const VISEME_MOUTH_BLEND = {
+  viseme_sil: { mouthClose: 0.10 },
+  viseme_PP: { mouthClose: 0.08, mouthPressLeft: 0.03, mouthPressRight: 0.03 },
+  viseme_FF: {},
+  viseme_TH: {},
+  viseme_DD: {},
+  viseme_kk: { mouthShrugLower: 0.06 },
+  viseme_CH: {},
+  viseme_SS: { mouthStretchLeft: 0.04, mouthStretchRight: 0.04 },
+  viseme_nn: { mouthClose: 0.08 },
+  viseme_RR: {},
+  viseme_aa: {},
+  viseme_E: { mouthSmileLeft: 0.05, mouthSmileRight: 0.05, mouthStretchLeft: 0.04, mouthStretchRight: 0.04 },
+  viseme_I: { mouthSmileLeft: 0.04, mouthSmileRight: 0.04, mouthStretchLeft: 0.04, mouthStretchRight: 0.04 },
+  viseme_O: { mouthFunnel: 0, mouthPucker: 0 },
+  viseme_U: { mouthFunnel: 0, mouthPucker: 0 },
+};
+
+const VISEME_SHAPE_STRENGTH = {
+  viseme_sil: 0.05,
+  viseme_PP: 0.10,
+  viseme_FF: 0.12,
+  viseme_TH: 0.12,
+  viseme_DD: 0.14,
+  viseme_kk: 0.12,
+  viseme_CH: 0.15,
+  viseme_SS: 0.12,
+  viseme_nn: 0.12,
+  viseme_RR: 0.14,
+  viseme_aa: 0.18,
+  viseme_E: 0.14,
+  viseme_I: 0.12,
+  viseme_O: 0.16,
+  viseme_U: 0.12,
+};
+
+function buildVisemeBlendshape(viseme, strength = 1) {
+  const v = Math.max(0, Math.min(1, strength));
+  const jawVal = (VISEME_JAW[viseme] ?? 0) * v * 0.55;
+  const visemeVal = (VISEME_SHAPE_STRENGTH[viseme] ?? 0.14) * v;
+  const blend = {
+    jawOpen: jawVal,
+    [viseme]: visemeVal,
+  };
+  const mouth = VISEME_MOUTH_BLEND[viseme] ?? {};
+  for (const [k, value] of Object.entries(mouth)) {
+    let out = value * v;
+
+    // Prevent inward mouth collapse when closure channels overpower jaw opening.
+    if (k === 'mouthClose' && jawVal > 0.10) {
+      out = Math.min(out, jawVal * 0.6);
+    }
+    if ((k === 'mouthPressLeft' || k === 'mouthPressRight') && jawVal > 0) {
+      out = Math.min(out, Math.max(0.02, jawVal * 0.25));
+    }
+
+    blend[k] = out;
+  }
+  return blend;
+}
 
 const FPS_MS = 1000 / 30;
 
@@ -405,10 +464,7 @@ export function alignmentToVisemes(alignment, language = 'en-US') {
     for (let t = startMs; t < endMs; t += FPS_MS) {
       frames.push({
         timestamp: Math.round(t),
-        blendshapes: {
-          jawOpen: jawVal,
-          [viseme]: 0.95,
-        },
+        blendshapes: buildVisemeBlendshape(viseme),
       });
     }
   }
@@ -421,21 +477,58 @@ export function alignmentToVisemes(alignment, language = 'en-US') {
 export function wordBoundariesToVisemes(wordBoundaries, language = 'en-US') {
   if (!Array.isArray(wordBoundaries) || wordBoundaries.length === 0) return [];
 
-  const fakeAlignment = {
-    characters: wordBoundaries.flatMap((wb) => String(wb.word || '').toLowerCase().split('')),
-    character_start_times_seconds: wordBoundaries.flatMap((wb) => {
-      const word = String(wb.word || '');
-      const startSec = Number(wb.audioOffset || 0) / 10_000_000;
-      const charDur = (Number(wb.duration || 0) / 10_000_000) / Math.max(1, word.length);
-      return word.split('').map((_, ci) => startSec + ci * charDur);
-    }),
-    character_end_times_seconds: wordBoundaries.flatMap((wb) => {
-      const word = String(wb.word || '');
-      const startSec = Number(wb.audioOffset || 0) / 10_000_000;
-      const charDur = (Number(wb.duration || 0) / 10_000_000) / Math.max(1, word.length);
-      return word.split('').map((_, ci) => startSec + (ci + 1) * charDur);
-    }),
+  const languageMap = CHAR_TO_VISEME_BY_LANGUAGE[language] ?? {};
+  const charToViseme = { ...CHAR_TO_VISEME_BASE, ...languageMap };
+  const frames = [];
+
+  const pushSilence = (startMs, endMs) => {
+    for (let t = startMs; t < endMs; t += FPS_MS) {
+      frames.push({
+        timestamp: Math.round(t),
+        blendshapes: buildVisemeBlendshape('viseme_sil', 1),
+      });
+    }
   };
 
-  return alignmentToVisemes(fakeAlignment, language);
+  let cursorMs = null;
+
+  for (const wb of wordBoundaries) {
+    const word = String(wb.word || '').trim();
+    const startMs = Number(wb.audioOffset || 0) / 10_000;
+    const durationMs = Math.max(1, Number(wb.duration || 0) / 10_000);
+    const endMs = startMs + durationMs;
+
+    if (cursorMs == null) cursorMs = startMs;
+    if (startMs > cursorMs) {
+      pushSilence(cursorMs, startMs);
+    }
+
+    const chars = word.toLowerCase().split('');
+    if (chars.length === 0) {
+      cursorMs = Math.max(cursorMs, endMs);
+      continue;
+    }
+
+    const charDur = durationMs / chars.length;
+    for (let ci = 0; ci < chars.length; ci++) {
+      const char = chars[ci];
+      const charStartMs = startMs + ci * charDur;
+      const charEndMs = startMs + (ci + 1) * charDur;
+      const viseme = charToViseme[char] ?? 'viseme_sil';
+      const jawVal = VISEME_JAW[viseme] ?? 0.0;
+
+      for (let t = charStartMs; t < charEndMs; t += FPS_MS) {
+        frames.push({
+          timestamp: Math.round(t),
+          blendshapes: buildVisemeBlendshape(viseme),
+        });
+      }
+    }
+
+    cursorMs = Math.max(cursorMs, endMs);
+  }
+
+  const seen = new Map();
+  for (const f of frames) seen.set(f.timestamp, f);
+  return [...seen.values()].sort((a, b) => a.timestamp - b.timestamp);
 }

@@ -87,8 +87,11 @@ export interface MemorySearchResult {
  * Generate 384-dimensional embedding using HuggingFace (intfloat/multilingual-e5-small)
  * via providers abstraction layer. Supports EN/FR/AR/ES natively.
  */
-export async function generateEmbedding(text: string): Promise<number[]> {
-  const result = await providersGenerateEmbedding(text);
+export async function generateEmbedding(
+  text: string,
+  options: { prefixType?: 'query' | 'passage' | 'none' } = {}
+): Promise<number[]> {
+  const result = await providersGenerateEmbedding(text, options);
   return result.embedding;
 }
 
@@ -122,7 +125,7 @@ export async function storeEpisodeMemory(params: {
     });
 
     // 2. Generate embedding
-    const embedding = await generateEmbedding(episodeText);
+    const embedding = await generateEmbedding(episodeText, { prefixType: 'passage' });
 
     // 3. Extract learning summary using LLM
     const learningSummary = await extractLearningSummary(transcript, scores);
@@ -177,13 +180,13 @@ export async function retrieveEpisodeMemories(params: {
   const {
     rep_id,
     query,
-    threshold = parseFloat(process.env.MEMORY_SIMILARITY_THRESHOLD || '0.7'),
-    limit = parseInt(process.env.MEMORY_MAX_RESULTS || '5'),
+    threshold = parseFloat(process.env.MEMORY_SIMILARITY_THRESHOLD || '0.55'),
+    limit = parseInt(process.env.MEMORY_MAX_RESULTS || '3'),
   } = params;
 
   try {
     // Generate query embedding
-    const queryEmbedding = await generateEmbedding(query);
+    const queryEmbedding = await generateEmbedding(query, { prefixType: 'query' });
 
     // Call Supabase RPC function
     const { data, error } = await supabase.rpc('search_episode_memories', {
@@ -198,7 +201,7 @@ export async function retrieveEpisodeMemories(params: {
       return [];
     }
 
-    return data || [];
+    return (data || []).filter((memory: any) => (memory.salience_score ?? 0.5) >= 0.4);
   } catch (error) {
     console.error('Error retrieving episode memories:', error);
     return [];

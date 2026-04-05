@@ -31,7 +31,47 @@ export interface LipSyncDebugStats {
   peakFrame: number;
   peakElapsed: number;
   appliedTargets: number;
+  dominantViseme: string;
+  dominantMouth: string;
 }
+
+export interface AnimationLogEntry {
+  elapsedMs: number;
+  frameIndex: number;
+  frameCount: number;
+  jawOpen: number;
+  dominantViseme: string;
+  dominantMouth: string;
+  targetsApplied: number;
+  clockSource: 'audio' | 'perf';
+}
+
+const SKIP_POKING_BLENDSHAPES = new Set([
+  'mouthLowerDownLeft',
+  'mouthLowerDownRight',
+  'mouthUpperUpLeft',
+  'mouthUpperUpRight',
+  'mouthFunnel',
+  'mouthPucker',
+]);
+
+const VISEME_RUNTIME_CAP: Record<string, number> = {
+  viseme_sil: 0.05,
+  viseme_pp: 0.10,
+  viseme_ff: 0.12,
+  viseme_th: 0.12,
+  viseme_dd: 0.14,
+  viseme_kk: 0.12,
+  viseme_ch: 0.15,
+  viseme_ss: 0.12,
+  viseme_nn: 0.12,
+  viseme_rr: 0.14,
+  viseme_aa: 0.18,
+  viseme_e: 0.14,
+  viseme_i: 0.12,
+  viseme_o: 0.16,
+  viseme_u: 0.12,
+};
 
 /**
  * NVIDIA Audio2Face-3D ARKit 52 → ReadyPlayerMe Complete Mapping
@@ -74,11 +114,6 @@ const AUDIO2FACE_TO_RPM: Record<string, string[]> = {
   'mouthPressRight': ['mouthPressRight'],
 
   // === MOUTH LIP PARTING (Indices 34-35, 60-61 - KEY for speech) ===
-  'mouthLowerDownLeft': ['mouthLowerDownLeft'],
-  'mouthLowerDownRight': ['mouthLowerDownRight'],
-  'mouthUpperUpLeft': ['mouthUpperUpLeft'],
-  'mouthUpperUpRight': ['mouthUpperUpRight'],
-
   // === CHEEKS ===
   'cheekPuff': ['cheekPuff'],
   'cheekSquintLeft': ['cheekSquintLeft'],
@@ -172,12 +207,6 @@ const ARKIT_TO_RPM_VISEME: Record<string, Array<{ target: string; weight: number
   'mouthFrownRight': [
     { target: 'visemeFF', weight: 0.6 },
   ],
-  'mouthLowerDownLeft': [
-    { target: 'visemeDD', weight: 0.7 },
-  ],
-  'mouthLowerDownRight': [
-    { target: 'visemeDD', weight: 0.7 },
-  ],
   'cheekSquintLeft': [
     { target: 'visemeSS', weight: 0.5 },
   ],
@@ -189,6 +218,7 @@ const ARKIT_TO_RPM_VISEME: Record<string, Array<{ target: string; weight: number
 export class LipSyncAnimator {
   private mesh: THREE.Mesh;
   private morphTargetDictionary: Record<string, number>;
+  private canonicalMorphTargetDictionary: Record<string, number> = {};
   private currentFrameIndex: number = 0;
   private startTime: number = 0;
   private audioStartTime: number = 0;
@@ -199,7 +229,7 @@ export class LipSyncAnimator {
   private isPlaying: boolean = false;
   speakingFactor: number = 0;
   private speakingTarget: number = 0;
-  private speakingSpeed: number = 15;
+  private speakingSpeed: number = 28;
   private neutralFadeDuration: number = 0.25;
   private neutralElapsed: number = 0;
   private neutralActive: boolean = false;
@@ -212,6 +242,14 @@ export class LipSyncAnimator {
   private _peakFrame: number = 0;
   private _peakElapsed: number = 0;
   private _appliedTargetsCount: number = 0;
+  private _peakAppliedTargetsCount: number = 0;
+  private _sumAppliedTargetsCount: number = 0;
+  private _appliedTargetsSamples: number = 0;
+  private _dominantViseme: string = 'viseme_sil';
+  private _dominantMouth: string = 'jawOpen';
+  private animationLog: AnimationLogEntry[] = [];
+  private lastLogPrintMs: number = 0;
+  private realtimeLogEnabled: boolean = false;
 
   private audioElement: HTMLAudioElement | null = null;
   private isMockData: boolean = false;
@@ -222,15 +260,31 @@ export class LipSyncAnimator {
     this.mesh = config.mesh;
     this.additionalMeshes = config.additionalMeshes ?? [];
     this.smoothingFactor = config.smoothing ?? 0.15;
+    this.realtimeLogEnabled = typeof window !== 'undefined' && (window as any).__ALIA_LIPLOG__ === true;
 
     this.morphTargetDictionary = {};
     if (config.mesh.morphTargetDictionary) {
       this.morphTargetDictionary = config.mesh.morphTargetDictionary;
     }
 
-    const hasJawOpen = 'jawOpen' in this.morphTargetDictionary;
-    const hasVisemes = 'visemeaa' in this.morphTargetDictionary;
-    console.log(`🎬 LipSyncAnimator (RPM): ${Object.keys(this.morphTargetDictionary).length} targets, jawOpen=${hasJawOpen}, visemes=${hasVisemes}`);
+    for (const [name, index] of Object.entries(this.morphTargetDictionary)) {
+      this.canonicalMorphTargetDictionary[this.normalizeMorphName(name)] = index;
+    }
+
+    const hasJawOpen = this.resolveMorphTargetIndex('jawOpen') !== undefined;
+    const visemeTargetCount = Object.keys(this.morphTargetDictionary).filter((k) => k.toLowerCase().includes('viseme')).length;
+    const hasVisemes = visemeTargetCount > 0;
+    console.log(`🎬 LipSyncAnimator (RPM): ${Object.keys(this.morphTargetDictionary).length} targets, jawOpen=${hasJawOpen}, visemes=${hasVisemes}, visemeTargets=${visemeTargetCount}`);
+  }
+
+  private normalizeMorphName(name: string): string {
+    return String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  private resolveMorphTargetIndex(targetName: string): number | undefined {
+    const direct = this.morphTargetDictionary[targetName];
+    if (direct !== undefined) return direct;
+    return this.canonicalMorphTargetDictionary[this.normalizeMorphName(targetName)];
   }
 
   setAudioElement(el: HTMLAudioElement | null): void {
@@ -272,6 +326,13 @@ export class LipSyncAnimator {
     this._peakFrame = 0;
     this._peakElapsed = 0;
     this._appliedTargetsCount = 0;
+    this._peakAppliedTargetsCount = 0;
+    this._sumAppliedTargetsCount = 0;
+    this._appliedTargetsSamples = 0;
+    this._dominantViseme = 'viseme_sil';
+    this._dominantMouth = 'jawOpen';
+    this.animationLog = [];
+    this.lastLogPrintMs = 0;
     this.neutralActive = false;
     this.neutralSnapshot = null;
 
@@ -318,7 +379,17 @@ export class LipSyncAnimator {
     // Master clock
     let elapsedTime: number;
     if (this.audioElement && !this.audioElement.paused && this.audioElement.duration > 0) {
-      elapsedTime = this.audioElement.currentTime * 1000;
+      const audioElapsedMs = this.audioElement.currentTime * 1000;
+      const audioDurationMs = this.audioElement.duration * 1000;
+      const frameTimelineMs = this.blendshapeData[this.blendshapeData.length - 1]?.timestamp ?? 0;
+      
+      // Normalize frame progression to audio progress so animation doesn't end before audio
+      if (audioDurationMs > 0 && frameTimelineMs > 0 && frameTimelineMs < audioDurationMs) {
+        const audioProgress = THREE.MathUtils.clamp(audioElapsedMs / audioDurationMs, 0, 1);
+        elapsedTime = audioProgress * frameTimelineMs;
+      } else {
+        elapsedTime = audioElapsedMs;
+      }
     } else {
       elapsedTime = now - this.startTime + this.audioStartTime;
     }
@@ -347,6 +418,15 @@ export class LipSyncAnimator {
         ? this.blendshapeData[this.currentFrameIndex + 1]
         : currentFrame;
 
+    // During explicit silence visemes, ease speakingFactor down so residual mouth tension fades naturally.
+    const frameViseme = this.getDominantChannel(currentFrame.blendshapes, 'viseme_', 'viseme_sil');
+    if (frameViseme === 'viseme_sil') {
+      const silenceFade = THREE.MathUtils.clamp(deltaSeconds * 24, 0, 1);
+      this.speakingFactor = THREE.MathUtils.lerp(this.speakingFactor, 0.08, silenceFade);
+      // Prevent residual "speaking" tension from persisting on silence frames.
+      this.speakingFactor = Math.min(this.speakingFactor, 0.18);
+    }
+
     let t = 0;
     if (nextFrame.timestamp !== currentFrame.timestamp) {
       t = (elapsedTime - currentFrame.timestamp) / (nextFrame.timestamp - currentFrame.timestamp);
@@ -355,18 +435,27 @@ export class LipSyncAnimator {
     t = t * t * (3 - 2 * t); // Smoothstep
 
     this.applyBlendshapes(currentFrame.blendshapes, nextFrame.blendshapes, t);
+    this.captureAnimationLog(elapsedTime);
 
     if (this.currentFrameIndex >= this.blendshapeData.length - 1) {
+      // Check if audio has actually ended, not just frame buffer
+      const audioEnded = this.audioElement 
+        ? (this.audioElement.currentTime >= this.audioElement.duration - 0.05) 
+        : false;
+      
       if (this.isMockData && this.speakingTarget > 0) {
         // Voice still active — loop mock data so mouth keeps moving
         this.currentFrameIndex = 0;
         this.startTime = now;
         this.audioStartTime = 0;
         this._lastElapsedMs = 0;
-      } else {
+      } else if (audioEnded || (!this.audioElement && this.currentFrameIndex >= this.blendshapeData.length - 1)) {
         this.isPlaying = false;
         this.startNeutralFade();
-        console.log(`✅ Complete: ${this._appliedTargetsCount} targets, peak jaw=${this._peakJaw.toFixed(3)}`);
+        const avgTargets = this._appliedTargetsSamples > 0
+          ? this._sumAppliedTargetsCount / this._appliedTargetsSamples
+          : 0;
+        console.log(`✅ Complete: last=${this._appliedTargetsCount} peak=${this._peakAppliedTargetsCount} avg=${avgTargets.toFixed(1)} targets, peak jaw=${this._peakJaw.toFixed(3)}`);
       }
     }
   }
@@ -382,22 +471,59 @@ export class LipSyncAnimator {
     let appliedCount = 0;
     const skipped: string[] = [];
 
+    // Reference jaw opening for this interpolation step; used to keep mouthClose/press from collapsing inward.
+    const jaw1 = frame1.jawOpen ?? 0;
+    const jaw2 = frame2.jawOpen ?? 0;
+    const jawInterpolated = Math.min((jaw1 + (jaw2 - jaw1) * t) * 0.5, 0.35);
+    const dominantVisemeFrame = this.getDominantChannel(frame1, 'viseme_', 'viseme_sil');
+
     // Procedural micro-expressions during speech for liveliness
     const now = performance.now();
     const microBrow = Math.sin(now * 0.0043) * 0.012 * this.speakingFactor;
     const microCheek = (Math.sin(now * 0.0031) * 0.5 + 0.5) * 0.05 * this.speakingFactor;
 
     for (const blendshapeName of allBlendshapes) {
+      if (SKIP_POKING_BLENDSHAPES.has(blendshapeName)) {
+        continue;
+      }
+
       const value1 = frame1[blendshapeName] ?? 0;
       const value2 = frame2[blendshapeName] ?? 0;
       let interpolated = value1 + (value2 - value1) * t;
 
-      // RPM-specific amplification: 1.2x for jaw, 1.3x for mouth
+      // RPM-specific damping: jaw is EXTREMELY sensitive on RPM, reduce drastically
       const lower = blendshapeName.toLowerCase();
       if (lower === 'jawopen') {
-        interpolated = Math.min(interpolated * 1.2, 0.7);
+        // Balance: enough movement for clear articulation (0.25-0.35 range), but no clip
+        // 50% of incoming keeps natural range, clamp to 0.35 max (safe opening without clip)
+        interpolated = Math.min(interpolated * 0.5, 0.35);
+        if (this._peakJaw < interpolated) this._peakJaw = interpolated;
       } else if (lower.includes('mouth') || lower.includes('lip')) {
-        interpolated = Math.min(interpolated * 1.3, 1.0);
+        interpolated = Math.min(interpolated * 0.65, 0.30);
+
+        // Prevent wide grin artifacts on RPM during SS/E/I visemes.
+        if (lower.includes('mouthstretch')) {
+          interpolated = Math.min(interpolated * 0.35, 0.08);
+        } else if (lower.includes('mouthsmile')) {
+          interpolated = Math.min(interpolated * 0.45, 0.10);
+        }
+      }
+
+      // Scale viseme amplitudes with speaking state so mouth relaxes toward silence.
+      if (lower.startsWith('viseme')) {
+        interpolated = interpolated * this.speakingFactor;
+        interpolated = Math.min(interpolated, VISEME_RUNTIME_CAP[lower] ?? 0.50);
+      }
+
+      // Hard anti-collapse guard for RPM: mouth closure/press can never exceed jaw-relative caps.
+      if (lower === 'mouthclose') {
+        // During open speech, cap closure so it won't invert geometry.
+        // At near-silence, do not cap so lips can fully close.
+        if (jawInterpolated > 0.10) {
+          interpolated = Math.min(interpolated, jawInterpolated * 0.6);
+        }
+      } else if (lower === 'mouthpressleft' || lower === 'mouthpressright') {
+        interpolated = Math.min(interpolated, Math.max(0.02, jawInterpolated * 0.25));
       }
 
       // Add procedural micro-expressions to secondary channels
@@ -410,15 +536,18 @@ export class LipSyncAnimator {
       // Asymmetric smoothing: fast onset (0.45), slower offset (0.82)
       const baseSmooth = this.isMockData ? 0.6 : 0.75;
       const prevVal = this.lastBlendshapeValues[blendshapeName] ?? 0;
+      const isVisemeChannel = lower.startsWith('viseme');
       const smoothFactor = interpolated > prevVal
         ? Math.min(baseSmooth + 0.15, 0.85)   // fast attack
-        : Math.max(baseSmooth - 0.10, 0.50);  // slower release
+        : isVisemeChannel
+          ? Math.max(baseSmooth - 0.30, 0.25) // visemes: faster release to silence
+          : Math.max(baseSmooth - 0.10, 0.50); // other channels: slower release
 
       // PRIMARY: Direct RPM mapping
       const rpmTargets = AUDIO2FACE_TO_RPM[blendshapeName];
       if (rpmTargets) {
         for (const targetName of rpmTargets) {
-          const idx = this.morphTargetDictionary[targetName];
+          const idx = this.resolveMorphTargetIndex(targetName);
           if (idx !== undefined && idx >= 0 && idx < this.mesh.morphTargetInfluences.length) {
             const prev = this.mesh.morphTargetInfluences[idx] ?? 0;
             const smoothed = THREE.MathUtils.lerp(prev, interpolated, smoothFactor);
@@ -430,7 +559,7 @@ export class LipSyncAnimator {
       // FALLBACK: ARKit → RPM viseme mapping
       else if (blendshapeName in ARKIT_TO_RPM_VISEME) {
         for (const { target, weight } of ARKIT_TO_RPM_VISEME[blendshapeName]) {
-          const idx = this.morphTargetDictionary[target];
+          const idx = this.resolveMorphTargetIndex(target);
           if (idx !== undefined && idx >= 0 && idx < this.mesh.morphTargetInfluences.length) {
             const weighted = interpolated * weight;
             const prev = this.mesh.morphTargetInfluences[idx] ?? 0;
@@ -443,7 +572,7 @@ export class LipSyncAnimator {
       }
       // EXACT MATCH: RPM target name = blendshape name
       else {
-        const idx = this.morphTargetDictionary[blendshapeName];
+        const idx = this.resolveMorphTargetIndex(blendshapeName);
         if (idx !== undefined && idx >= 0 && idx < this.mesh.morphTargetInfluences.length) {
           const prev = this.mesh.morphTargetInfluences[idx] ?? 0;
           const smoothed = THREE.MathUtils.lerp(prev, interpolated, smoothFactor);
@@ -460,7 +589,13 @@ export class LipSyncAnimator {
       }
     }
 
+    this._dominantViseme = dominantVisemeFrame;
+    this._dominantMouth = this.getDominantChannel(frame1, 'mouth', 'jawOpen', true);
+
     this._appliedTargetsCount = appliedCount;
+    this._peakAppliedTargetsCount = Math.max(this._peakAppliedTargetsCount, appliedCount);
+    this._sumAppliedTargetsCount += appliedCount;
+    this._appliedTargetsSamples += 1;
 
     if (skipped.length > 0 && this._applyBSCallCount === 0) {
       console.warn(`⚠️  ${skipped.length} unmapped:`, skipped.slice(0, 8));
@@ -468,6 +603,53 @@ export class LipSyncAnimator {
     this._applyBSCallCount++;
 
     this.mirrorToAdditionalMeshes();
+  }
+
+  private getDominantChannel(
+    values: Record<string, number>,
+    prefix: string,
+    fallback: string,
+    includeJaw: boolean = false
+  ): string {
+    let winner = fallback;
+    let best = -1;
+    for (const [name, value] of Object.entries(values)) {
+      const n = Number(value) || 0;
+      const lower = name.toLowerCase();
+      const matches = includeJaw
+        ? lower.startsWith(prefix) || lower === 'jawopen'
+        : lower.startsWith(prefix);
+      if (!matches) continue;
+      if (n > best) {
+        best = n;
+        winner = name;
+      }
+    }
+    return winner;
+  }
+
+  private captureAnimationLog(elapsedTime: number): void {
+    const clockSource: 'audio' | 'perf' = (this.audioElement && !this.audioElement.paused) ? 'audio' : 'perf';
+    const entry: AnimationLogEntry = {
+      elapsedMs: Math.round(elapsedTime),
+      frameIndex: this.currentFrameIndex,
+      frameCount: this.blendshapeData.length,
+      jawOpen: Number((this.lastBlendshapeValues['jawOpen'] ?? 0).toFixed(3)),
+      dominantViseme: this._dominantViseme,
+      dominantMouth: this._dominantMouth,
+      targetsApplied: this._appliedTargetsCount,
+      clockSource,
+    };
+
+    this.animationLog.push(entry);
+    if (this.animationLog.length > 400) {
+      this.animationLog.shift();
+    }
+
+    if (this.realtimeLogEnabled && entry.elapsedMs - this.lastLogPrintMs >= 1000) {
+      this.lastLogPrintMs = entry.elapsedMs;
+      console.log('[LIPLOG]', entry);
+    }
   }
 
   private mirrorToAdditionalMeshes(): void {
@@ -564,7 +746,14 @@ export class LipSyncAnimator {
       peakFrame: this._peakFrame,
       peakElapsed: this._peakElapsed,
       appliedTargets: this._appliedTargetsCount,
+      dominantViseme: this._dominantViseme,
+      dominantMouth: this._dominantMouth,
     };
+  }
+
+  getAnimationLog(limit: number = 80): AnimationLogEntry[] {
+    const safeLimit = Math.max(1, Math.min(400, Math.floor(limit)));
+    return this.animationLog.slice(-safeLimit);
   }
 }
 

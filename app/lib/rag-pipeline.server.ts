@@ -71,8 +71,8 @@ export interface RAGConfig {
 }
 
 const defaultConfig: RAGConfig = {
-  memoryThreshold: 0.7,
-  memoryLimit: 5,
+  memoryThreshold: 0.55,
+  memoryLimit: 3,
   includeProfile: true,
   temperature: 0.7,
   maxTokens: 1024,
@@ -93,7 +93,7 @@ export async function retrieveMemories(
   const cfg = { ...defaultConfig, ...config };
   
   // Generate query embedding
-  const { embedding }: EmbeddingResponse = await generateEmbedding(query);
+  const { embedding }: EmbeddingResponse = await generateEmbedding(query, { prefixType: 'query' });
   
   // Search in pgvector
   const { data, error } = await supabase.rpc('search_episode_memories', {
@@ -119,7 +119,7 @@ export async function retrieveConsolidatedMemories(
   query: string,
   limit = 3
 ): Promise<any[]> {
-  const { embedding } = await generateEmbedding(query);
+  const { embedding } = await generateEmbedding(query, { prefixType: 'query' });
   
   const { data, error } = await supabase.rpc('search_consolidated_memories', {
     p_rep_id: rep_id,
@@ -294,7 +294,7 @@ export async function storeEpisodeMemory(params: {
 }): Promise<{ success: boolean; memory_id?: string; error?: string }> {
   try {
     // Generate embedding
-    const { embedding } = await generateEmbedding(params.episode_text);
+    const { embedding } = await generateEmbedding(params.episode_text, { prefixType: 'passage' });
     
     // Extract learning summary with LLM
     const summaryPrompt = `Analyze this medical sales training session and provide JSON:

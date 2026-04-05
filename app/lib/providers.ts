@@ -303,18 +303,21 @@ export interface EmbeddingResponse {
   provider: 'huggingface' | 'nvidia' | 'ollama';
 }
 
-export async function generateEmbedding(text: string): Promise<EmbeddingResponse> {
+export async function generateEmbedding(
+  text: string,
+  options: { prefixType?: 'query' | 'passage' | 'none' } = {}
+): Promise<EmbeddingResponse> {
   const start = Date.now();
+  const prefixType = options.prefixType ?? 'query';
+  const modelInput =
+    prefixType === 'none' ? text : `${prefixType}: ${text}`;
 
   // Primary: HuggingFace Inference API (384-dim intfloat/multilingual-e5-small)
   if (config.embedding.provider === 'huggingface' && config.embedding.huggingface.token) {
     try {
-      // e5 models require 'query:' prefix for retrieval tasks
-      const prefixedText = `query: ${text}`;
-      
       const raw = (await hf.featureExtraction({
         model: 'intfloat/multilingual-e5-small',
-        inputs: prefixedText,
+        inputs: modelInput,
       })) as number[] | number[][];
 
       // featureExtraction returns number[] | number[][] depending on input count
@@ -338,7 +341,7 @@ export async function generateEmbedding(text: string): Promise<EmbeddingResponse
   if (config.embedding.provider === 'nvidia' && config.embedding.nvidia.apiKey) {
     try {
       console.warn('⚠️ Using NVIDIA NIM for embeddings (1024-dim) — dimension mismatch likely with 384-dim schema');
-      const embedding = await NvidiaNIM.generateEmbedding(text);
+      const embedding = await NvidiaNIM.generateEmbedding(modelInput);
       return {
         embedding,
         elapsed_ms: Date.now() - start,
@@ -351,7 +354,7 @@ export async function generateEmbedding(text: string): Promise<EmbeddingResponse
 
   // Final fallback: Ollama (768-dim)
   console.warn('⚠️ Falling back to Ollama (768-dim) — dimension mismatch likely with 384-dim schema');
-  const result = await ollama.embed(text);
+  const result = await ollama.embed(modelInput);
   return {
     ...result,
     provider: 'ollama',

@@ -4,6 +4,14 @@ const TalkingHeadAvatar = lazy(() => import('./TalkingHeadAvatar.client'));
 
 interface Props {
   audioBase64: string | null;
+  audioDurationMs?: number;
+  playbackStartedAtMs?: number | null;
+  timeline?: {
+    visemes: string[];
+    vtimes: number[];
+    vdurations: number[];
+  } | null;
+  canInitializeAudio?: boolean;
   language?: string;
   avatarUrl?: string;
   isActive?: boolean;
@@ -11,6 +19,10 @@ interface Props {
 
 export function AvatarContainer({
   audioBase64,
+  audioDurationMs = 0,
+  playbackStartedAtMs = null,
+  timeline,
+  canInitializeAudio = false,
   language = 'en-US',
   avatarUrl = '/avatars/alia.glb',
   isActive = false,
@@ -32,6 +44,10 @@ export function AvatarContainer({
     >
       <TalkingHeadAvatar
         audioBase64={audioBase64}
+        audioDurationMs={audioDurationMs}
+        playbackStartedAtMs={playbackStartedAtMs}
+        timeline={timeline ?? null}
+        canInitializeAudio={canInitializeAudio}
         language={language}
         avatarUrl={avatarUrl}
         isActive={isActive}

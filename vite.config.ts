@@ -24,8 +24,8 @@ export default defineConfig({
     noExternal: ['three'],
   },
   optimizeDeps: {
-    include: ['three', '@met4citizen/talkinghead'],
-    exclude: ['@met4citizen/talkinghead/lipsync-*'],
+    include: ['three'],
+    exclude: ['@met4citizen/talkinghead'],
   },
   assetsInclude: ['**/*.glb', '**/*.gltf'],
 });

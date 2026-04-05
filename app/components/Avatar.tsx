@@ -12,6 +12,7 @@ import { useEffect, useRef, useState, lazy, Suspense } from 'react';
 import { useImperativeHandle, forwardRef } from 'react';
 import LipSyncAnimator from '~/lib/lip-sync-animator.client';
 import type { LipSyncDebugStats } from '~/lib/lip-sync-animator.client';
+import type { AnimationLogEntry } from '~/lib/lip-sync-animator.client';
 
 // =====================================================
 // Types
@@ -53,6 +54,8 @@ export interface AvatarHandle {
   setLipSyncOffset: (offsetMs: number) => void;
   /** Return live jaw and speaking-factor values for the debug overlay */
   getDebugStats: () => LipSyncDebugStats;
+  /** Return recent animation samples for viseme/mouth diagnostics */
+  getAnimationLog: (limit?: number) => AnimationLogEntry[];
   /** Direct access to the primary morph-target mesh (for diagnostic bypass) */
   getMesh: () => any;
 }
@@ -80,6 +83,7 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
     const animationRef = useRef<number>(0);
     const modelRef = useRef<any>(null);
     const lipSyncAnimatorRef = useRef<LipSyncAnimator | null>(null);
+    const restPoseRef = useRef<{ positionY: number; rotationX: number; rotationY: number; rotationZ: number } | null>(null);
     
     const [isLoaded, setIsLoaded] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -140,7 +144,10 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
         lipSyncAnimatorRef.current?.setLipSyncOffset(offsetMs);
       },
       getDebugStats: () => {
-        return lipSyncAnimatorRef.current?.getDebugStats?.() ?? { jawOpen: 0, speakingFactor: 0, elapsedMs: 0, frameIndex: 0, frameCount: 0, isPlaying: false, clockSource: 'perf' as const, offsetMs: 0, peakJaw: 0, peakFrame: 0, peakElapsed: 0, appliedTargets: 0 };
+        return lipSyncAnimatorRef.current?.getDebugStats?.() ?? { jawOpen: 0, speakingFactor: 0, elapsedMs: 0, frameIndex: 0, frameCount: 0, isPlaying: false, clockSource: 'perf' as const, offsetMs: 0, peakJaw: 0, peakFrame: 0, peakElapsed: 0, appliedTargets: 0, dominantViseme: 'viseme_sil', dominantMouth: 'jawOpen' };
+      },
+      getAnimationLog: (limit: number = 80) => {
+        return lipSyncAnimatorRef.current?.getAnimationLog?.(limit) ?? [];
       },
       getMesh: () => meshRef.current ?? null,
     }), []);
@@ -241,6 +248,13 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
             camera.position.set(0, headY + 0.15, 1.8);
             camera.lookAt(0, headY, 0);
             camera.updateProjectionMatrix();
+
+            restPoseRef.current = {
+              positionY: model.position.y,
+              rotationX: model.rotation.x,
+              rotationY: model.rotation.y,
+              rotationZ: model.rotation.z,
+            };
             
             scene.add(model);
             modelRef.current = model;
@@ -426,9 +440,24 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
           // Head micro-motion: very subtle idle breathing sway only — no speech bobbing
           if (modelRef.current) {
             const t = Date.now() * 0.001;
-            const breathRock = Math.sin(t * 1.8) * 0.003;
-            modelRef.current.rotation.y = Math.sin(t * 0.5) * 0.012;
-            modelRef.current.rotation.x = Math.sin(t * 0.35) * 0.005 + breathRock;
+            const restPose = restPoseRef.current;
+            const speakingNow = lipSyncAnimatorRef.current?.getIsPlaying() ?? false;
+            const motionScale = speakingNow ? 0.5 : 1;
+            const breathRock = Math.sin(t * 1.8) * 0.004 * motionScale;
+            const headSway = Math.sin(t * 0.55) * 0.02 * motionScale;
+            const headNod = Math.sin(t * 0.32 + 0.8) * 0.01 * motionScale;
+            const torsoShift = Math.sin(t * 0.9 + 0.4) * 0.012 * motionScale;
+
+            if (restPose) {
+              modelRef.current.position.y = restPose.positionY + torsoShift;
+              modelRef.current.rotation.y = restPose.rotationY + headSway;
+              modelRef.current.rotation.x = restPose.rotationX + headNod + breathRock;
+              modelRef.current.rotation.z = restPose.rotationZ + Math.sin(t * 0.28) * 0.006 * motionScale;
+            } else {
+              modelRef.current.rotation.y = headSway;
+              modelRef.current.rotation.x = headNod + breathRock;
+              modelRef.current.rotation.z = Math.sin(t * 0.28) * 0.006 * motionScale;
+            }
           }
 
           // Drive lip-sync morph targets — MUST be before renderer.render()
@@ -527,7 +556,7 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
             if (isSpeakingNow) {
               const smileL = dict['mouthSmileLeft'];
               const smileR = dict['mouthSmileRight'];
-              const subtleSmile = 0.04 + Math.sin(Date.now() * 0.001 * 0.7) * 0.02;
+              const subtleSmile = 0.008 + Math.sin(Date.now() * 0.001 * 0.7) * 0.004;
               if (smileL !== undefined) {
                 meshRef.current.morphTargetInfluences[smileL] = Math.max(
                   meshRef.current.morphTargetInfluences[smileL],
@@ -741,7 +770,9 @@ export const Avatar = forwardRef<AvatarHandle, AvatarProps>((props, ref) => {
     setLipSyncOffset: (offsetMs: number) =>
       avatarRef.current?.setLipSyncOffset(offsetMs),
     getDebugStats: () =>
-      avatarRef.current?.getDebugStats() ?? { jawOpen: 0, speakingFactor: 0, elapsedMs: 0, frameIndex: 0, frameCount: 0, isPlaying: false, clockSource: 'perf' as const, offsetMs: 0, peakJaw: 0, peakFrame: 0, peakElapsed: 0, appliedTargets: 0 },
+      avatarRef.current?.getDebugStats() ?? { jawOpen: 0, speakingFactor: 0, elapsedMs: 0, frameIndex: 0, frameCount: 0, isPlaying: false, clockSource: 'perf' as const, offsetMs: 0, peakJaw: 0, peakFrame: 0, peakElapsed: 0, appliedTargets: 0, dominantViseme: 'viseme_sil', dominantMouth: 'jawOpen' },
+    getAnimationLog: (limit?: number) =>
+      avatarRef.current?.getAnimationLog(limit) ?? [],
     getMesh: () => avatarRef.current?.getMesh() ?? null,
   }), []);
 
