@@ -109,6 +109,11 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
         // Pre-set speakingFactor to 1 so first frames are immediately visible
         (lipSyncAnimatorRef.current as any).speakingFactor = 1;
         lipSyncAnimatorRef.current.play(startTime);
+
+        // Capture diagnostics after playback starts so applied runtime values are meaningful.
+        setTimeout(() => {
+          lipSyncAnimatorRef.current?.dumpFullDiagnostics();
+        }, 300);
       },
       pauseLipSync: () => {
         lipSyncAnimatorRef.current?.setIsSpeaking(false);

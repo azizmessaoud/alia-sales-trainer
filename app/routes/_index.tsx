@@ -100,10 +100,48 @@ export default function Index() {
   const lastDebugUiUpdateRef = useRef<number>(0);
 
   const dumpAnimationLog = useCallback((label: string) => {
-    const samples = avatarRef.current?.getAnimationLog?.(120) ?? [];
+    const samples = avatarRef.current?.getAnimationLog?.(6000) ?? [];
     if (!samples.length) return;
 
-    const compact = samples.map((entry) => ({
+    const visemeCounts: Record<string, number> = {};
+    let nonSilSamples = 0;
+    let firstNonSilMs: number | null = null;
+    let lastNonSilMs: number | null = null;
+
+    for (const sample of samples) {
+      visemeCounts[sample.dominantViseme] = (visemeCounts[sample.dominantViseme] ?? 0) + 1;
+      if (sample.dominantViseme !== 'viseme_sil') {
+        nonSilSamples += 1;
+        if (firstNonSilMs === null) firstNonSilMs = sample.elapsedMs;
+        lastNonSilMs = sample.elapsedMs;
+      }
+    }
+
+    const topVisemes = Object.entries(visemeCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([viseme, count]) => ({ viseme, samples: count }));
+
+    const audioNowMs = audioElementRef.current
+      ? Math.round(audioElementRef.current.currentTime * 1000)
+      : null;
+    const lipNowMs = samples[samples.length - 1]?.elapsedMs ?? 0;
+    const timelineDriftMs = audioNowMs !== null ? lipNowMs - audioNowMs : null;
+    const currentOffsetMs = avatarRef.current?.getDebugStats?.().offsetMs ?? 0;
+
+    const summary = {
+      samples: samples.length,
+      nonSilSamples,
+      nonSilRatio: `${((nonSilSamples / samples.length) * 100).toFixed(1)}%`,
+      firstNonSilMs: firstNonSilMs ?? 'none',
+      lastNonSilMs: lastNonSilMs ?? 'none',
+      lipNowMs,
+      audioNowMs: audioNowMs ?? 'n/a',
+      timelineDriftMs: timelineDriftMs ?? 'n/a',
+      offsetMs: currentOffsetMs,
+    };
+
+    const full = samples.map((entry) => ({
       t_ms: entry.elapsedMs,
       frame: `${entry.frameIndex}/${entry.frameCount}`,
       jaw: entry.jawOpen,
@@ -113,8 +151,10 @@ export default function Index() {
       clock: entry.clockSource,
     }));
 
-    console.groupCollapsed(`🎬 Animation Log (${label}) samples=${compact.length}`);
-    console.table(compact);
+    console.groupCollapsed(`🎬 Full Conv Log (${label}) samples=${samples.length}`);
+    console.table(summary);
+    console.table(topVisemes);
+    console.table(full);
     console.groupEnd();
   }, []);
 
@@ -219,8 +259,15 @@ export default function Index() {
           dominantViseme: prev?.dominantViseme ?? 'viseme_sil',
           dominantMouth: prev?.dominantMouth ?? 'jawOpen',
         }));
-        // Always start from offset 0 — the audio element clock (real audio)
-        // or perf clock (browser TTS) handles synchronisation inside update().
+
+        // Apply a small lead for cloud TTS to improve perceived word-to-mouth sync.
+        // Override in console if needed: window.__ALIA_LIPSYNC_OFFSET_MS__ = -40
+        const configuredOffsetMs = isMock
+          ? 0
+          : Number((window as any).__ALIA_LIPSYNC_OFFSET_MS__ ?? -60);
+        avatarRef.current?.setLipSyncOffset(configuredOffsetMs);
+        console.log(`   └─ LipSync offset applied: ${configuredOffsetMs}ms`);
+
         animateAvatar(blendshapes, 0);
       },
 
