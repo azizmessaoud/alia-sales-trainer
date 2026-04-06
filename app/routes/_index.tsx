@@ -40,6 +40,19 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+}
+
 function detectAudioMime(bytes: Uint8Array): string {
   if (bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
     return 'audio/wav';
@@ -86,6 +99,9 @@ export default function Index() {
   const avatarRef = useRef<AvatarHandle>(null);
   const audioElementRef = useRef<HTMLAudioElement>(null);
   const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const objectUrlRef = useRef<string | null>(null);
   const animationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestStartRef = useRef<number>(0);
@@ -169,7 +185,7 @@ export default function Index() {
   // =====================================================
   // Full-Duplex WebSocket — progressive pipeline
   // =====================================================
-  const { sendChat, interrupt, startSession, endSession, status: wsStatus, currentStage } =
+  const { sendChat, sendRaw, interrupt, startSession, endSession, status: wsStatus, currentStage } =
     useALIAWebSocket({
       url: 'ws://localhost:3001',
       autoReconnect: true,
@@ -268,7 +284,7 @@ export default function Index() {
         avatarRef.current?.setLipSyncOffset(configuredOffsetMs);
         console.log(`   └─ LipSync offset applied: ${configuredOffsetMs}ms`);
 
-        animateAvatar(blendshapes, 0);
+        animateAvatar(blendshapes, configuredOffsetMs / 1000);
       },
 
       // Full pipeline done
@@ -282,6 +298,21 @@ export default function Index() {
 
       onStageChange: (stage) => setPipelineStage(stage),
 
+      onSTTResult: ({ text, confidence, language }) => {
+        const transcript = text.trim();
+        if (!transcript) return;
+
+        console.log(
+          `🎤 Azure STT [${language || sessionLanguage}]: "${transcript}"` +
+            (typeof confidence === 'number' ? ` (${Math.round(confidence * 100)}%)` : '')
+        );
+
+        setMessages((prev) => [
+          ...prev,
+          { id: crypto.randomUUID(), role: 'user', content: transcript, timestamp: new Date() },
+        ]);
+      },
+
       onError: (msg) => {
         setError(msg);
         setIsLoading(false);
@@ -291,9 +322,12 @@ export default function Index() {
   // =====================================================
   // Audio Context Unlock (required for autoplay)
   // =====================================================
-  const unlockAudioContext = useCallback((fromGesture: boolean = false) => {
+  const unlockAudioContext = useCallback((fromGesture: boolean = false, sourceEvent?: Event | null) => {
     if (audioUnlockedRef.current) return;
     if (!fromGesture) return;
+    if (sourceEvent && sourceEvent.isTrusted === false) return;
+    const userActivation = (navigator as any).userActivation;
+    if (sourceEvent && userActivation && userActivation.isActive === false) return;
     if (audioUnlockingRef.current) return;
 
     try {
@@ -322,9 +356,10 @@ export default function Index() {
     }
   }, []);
 
-  const handleGestureUnlock = useCallback(() => {
+  const handleGestureUnlock = useCallback((event?: any) => {
     setHasUserGesture(true);
-    unlockAudioContext(true);
+    const nativeEvent = (event?.nativeEvent ?? event) as Event | undefined;
+    unlockAudioContext(true, nativeEvent ?? null);
   }, [unlockAudioContext]);
 
   const scheduleChunk = useCallback((bytes: Uint8Array, isFirst: boolean) => {
@@ -543,8 +578,75 @@ export default function Index() {
     }
   }, []);
 
+  const stopAudioCapture = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop();
+    }
+    mediaRecorderRef.current = null;
+    setIsListening(false);
+  }, []);
+
+  const startAudioCapture = useCallback(async () => {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setError('MediaRecorder is not supported in this browser.');
+      return false;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const recordedChunks = audioChunksRef.current;
+        audioChunksRef.current = [];
+
+        micStreamRef.current?.getTracks().forEach((track) => track.stop());
+        micStreamRef.current = null;
+
+        if (!recordedChunks.length) {
+          return;
+        }
+
+        const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+        const buffer = await blob.arrayBuffer();
+        const audioBase64 = arrayBufferToBase64(buffer);
+
+        setIsLoading(true);
+        setError(null);
+        requestStartRef.current = performance.now();
+        sendRaw('stt_audio', { audio: audioBase64, language: sessionLanguage });
+      };
+
+      recorder.onerror = () => {
+        setIsListening(false);
+        setIsLoading(false);
+        setError('Audio capture failed. Please try again.');
+      };
+
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setIsListening(true);
+      setError(null);
+      console.log('🎤 Listening (server STT mode)...');
+      return true;
+    } catch (err) {
+      setError('Microphone access denied. Please allow microphone permissions.');
+      return false;
+    }
+  }, [sendRaw, sessionLanguage]);
+
   // =====================================================
-  // Microphone Input (Web Speech API — zero-latency STT)
+  // Microphone Input Fallback (Web Speech API)
   // =====================================================
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -595,42 +697,40 @@ export default function Index() {
     };
   }, [sessionLanguage]);
 
-  const toggleMicrophone = useCallback(() => {
+  const toggleMicrophone = useCallback(async () => {
+    if (isListening) {
+      stopAudioCapture();
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch {
+          // no-op
+        }
+      }
+      return;
+    }
+
+    const startedCapture = await startAudioCapture();
+    if (startedCapture) {
+      return;
+    }
+
     if (!recognitionRef.current) {
       setError('Speech recognition not supported in this browser. Use Chrome or Edge.');
       return;
     }
 
-    if (isListening) {
-      recognitionRef.current.stop();
-      setIsListening(false);
-    } else {
-      setError(null);
-      recognitionRef.current.start();
-      setIsListening(true);
-      console.log('🎤 Listening...');
-    }
-  }, [isListening]);
+    setError(null);
+    recognitionRef.current.start();
+    setIsListening(true);
+    console.log('🎤 Listening (browser speech fallback)...');
+  }, [isListening, startAudioCapture, stopAudioCapture]);
 
-  // Initialize session and unlock audio on mount
+  // Initialize session id on mount
   useEffect(() => {
     // Set sessionId on client-side only to avoid hydration mismatch
     setSessionId(crypto.randomUUID());
-
-    // Unlock audio on any user interaction
-    const handleInteraction = () => {
-      setHasUserGesture(true);
-      unlockAudioContext(true);
-    };
-
-    document.body.addEventListener('pointerdown', handleInteraction, { once: true });
-    document.body.addEventListener('keydown', handleInteraction, { once: true });
-
-    return () => {
-      document.body.removeEventListener('pointerdown', handleInteraction);
-      document.body.removeEventListener('keydown', handleInteraction);
-    };
-  }, [unlockAudioContext]);
+  }, []);
 
   // Start session only once WebSocket is connected
   const hasStartedSession = useRef(false);
@@ -643,9 +743,66 @@ export default function Index() {
     }
   }, [wsStatus, startSession]);
 
+  // Expose gesture API to window for console testing
+  useEffect(() => {
+    const gestures = ['handup', 'index', 'ok', 'thumbup', 'thumbdown', 'side', 'shrug', 'namaste'];
+    
+    (window as any).alia = {
+      playGesture: (name: string, duration?: number, mirror?: boolean) => {
+        if (!avatarRef.current) {
+          console.warn('❌ Avatar ref not ready');
+          return;
+        }
+        console.log(`🎭 [Console API] Playing gesture: ${name} (${duration}s, mirror=${mirror})`);
+        avatarRef.current.playGesture(name, duration, mirror);
+      },
+      
+      listGestures: () => {
+        console.log('Available gestures:', gestures);
+        return gestures;
+      },
+
+      testAllGestures: (delayMs = 3000) => {
+        console.log(`🎭 Testing all ${gestures.length} gestures with ${delayMs}ms delay...`);
+        let index = 0;
+        const playNext = () => {
+          if (index < gestures.length) {
+            const gesture = gestures[index];
+            console.log(`  [${index + 1}/${gestures.length}] ${gesture}`);
+            avatarRef.current?.playGesture(gesture, 2);
+            index++;
+            setTimeout(playNext, delayMs);
+          } else {
+            console.log('✅ Gesture sequence complete');
+          }
+        };
+        playNext();
+      },
+
+      getDiagnostics: () => {
+        if (!avatarRef.current) return null;
+        const stats = avatarRef.current.getDebugStats();
+        const log = avatarRef.current.getAnimationLog(20);
+        return {
+          stats,
+          recentFrames: log.slice(-5)
+        };
+      },
+    };
+
+    return () => {
+      delete (window as any).alia;
+    };
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      const recorder = mediaRecorderRef.current;
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.stop();
+      }
+      micStreamRef.current?.getTracks().forEach((track) => track.stop());
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
       if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
       endSession();
@@ -688,9 +845,10 @@ export default function Index() {
   // =====================================================
   // Audio Test Function (for debugging)
   // =====================================================
-  const testAudio = useCallback(() => {
+  const testAudio = useCallback((event?: any) => {
     console.log('🧪 Testing basic audio playback...');
-    unlockAudioContext(true);
+    const nativeEvent = (event?.nativeEvent ?? event) as Event | undefined;
+    unlockAudioContext(true, nativeEvent ?? null);
 
     if (!audioElementRef.current) {
       console.error('❌ Audio element not found!');
@@ -734,8 +892,8 @@ export default function Index() {
       color: '#fff',
       fontFamily: 'system-ui, -apple-system, sans-serif',
     }}
-      onMouseDown={handleGestureUnlock}
-      onTouchStart={handleGestureUnlock}
+      onClick={handleGestureUnlock}
+      onKeyDown={handleGestureUnlock}
     >
       {/* Hidden audio element for playback — also used as master clock for lip-sync */}
       <audio
@@ -802,6 +960,69 @@ export default function Index() {
         >
           🔊 Test Audio
         </button>
+
+        {/* Gesture Test Buttons */}
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <button
+            type="button"
+            onClick={() => (window as any).alia?.playGesture('handup', 2)}
+            title="Play handup gesture"
+            style={{
+              padding: '6px 10px',
+              borderRadius: '4px',
+              border: '1px solid rgba(135, 206, 250, 0.5)',
+              backgroundColor: 'rgba(135, 206, 250, 0.1)',
+              color: '#87cefa',
+              fontSize: '11px',
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(135, 206, 250, 0.2)'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(135, 206, 250, 0.1)'}
+          >
+            ✋ Handup
+          </button>
+
+          <button
+            type="button"
+            onClick={() => (window as any).alia?.playGesture('thumbup', 2)}
+            title="Play thumbup gesture"
+            style={{
+              padding: '6px 10px',
+              borderRadius: '4px',
+              border: '1px solid rgba(135, 206, 250, 0.5)',
+              backgroundColor: 'rgba(135, 206, 250, 0.1)',
+              color: '#87cefa',
+              fontSize: '11px',
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(135, 206, 250, 0.2)'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(135, 206, 250, 0.1)'}
+          >
+            👍 Thumbup
+          </button>
+
+          <button
+            type="button"
+            onClick={() => (window as any).alia?.testAllGestures(2000)}
+            title="Test all 8 gestures in sequence"
+            style={{
+              padding: '6px 10px',
+              borderRadius: '4px',
+              border: '1px solid rgba(255, 165, 0, 0.5)',
+              backgroundColor: 'rgba(255, 165, 0, 0.1)',
+              color: '#ffa500',
+              fontSize: '11px',
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 165, 0, 0.2)'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 165, 0, 0.1)'}
+          >
+            🎭 All
+          </button>
+        </div>
       </header>
       
       {/* Main Content */}

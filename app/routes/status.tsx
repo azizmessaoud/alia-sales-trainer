@@ -7,6 +7,9 @@ import { json } from '@remix-run/node';
 import type { LoaderFunction } from '@remix-run/node';
 import { useLoaderData } from '@remix-run/react';
 import { useState, useEffect } from 'react';
+import fs from 'node:fs/promises';
+import net from 'node:net';
+import path from 'node:path';
 
 interface SystemStatus {
   component: string;
@@ -15,7 +18,45 @@ interface SystemStatus {
   updatedAt: Date;
 }
 
+function isPortOpen(host: string, port: number, timeoutMs = 500): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+
+    const settle = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => settle(true));
+    socket.once('timeout', () => settle(false));
+    socket.once('error', () => settle(false));
+    socket.connect(port, host);
+  });
+}
+
 export const loader: LoaderFunction = async () => {
+  const wsPort = Number(process.env.WS_PORT ?? 3001);
+  const wsRunning = await isPortOpen('127.0.0.1', wsPort);
+
+  const orchestrationPath = path.join(process.cwd(), 'app', 'lib', 'orchestration.server.ts');
+  let orchestrationSource = '';
+  try {
+    orchestrationSource = await fs.readFile(orchestrationPath, 'utf-8');
+  } catch {
+    orchestrationSource = '';
+  }
+
+  const hasLangGraphStateMachine =
+    orchestrationSource.includes('StateGraph') &&
+    orchestrationSource.includes('addNode') &&
+    orchestrationSource.includes('compile(');
+
+  const nvidiaConfigured = Boolean(process.env.NVIDIA_API_KEY);
+
   const checks: SystemStatus[] = [
     {
       component: 'Avatar Renderer',
@@ -31,14 +72,18 @@ export const loader: LoaderFunction = async () => {
     },
     {
       component: 'NVIDIA Audio2Face API',
-      status: 'healthy',
-      message: 'API key configured, blendshape generation ready',
+      status: nvidiaConfigured ? 'healthy' : 'warning',
+      message: nvidiaConfigured
+        ? 'API key configured, blendshape generation ready'
+        : 'NVIDIA_API_KEY missing, fallback mode may be used',
       updatedAt: new Date(),
     },
     {
       component: 'WebSocket Server',
-      status: 'warning',
-      message: 'Server defined but not running (ws://localhost:3001)',
+      status: wsRunning ? 'healthy' : 'warning',
+      message: wsRunning
+        ? `Server reachable at ws://localhost:${wsPort}`
+        : `Server not reachable at ws://localhost:${wsPort} (run: npm run server:ws)`,
       updatedAt: new Date(),
     },
     {
@@ -49,8 +94,10 @@ export const loader: LoaderFunction = async () => {
     },
     {
       component: 'LangGraph Orchestration',
-      status: 'warning',
-      message: 'State machine not yet implemented',
+      status: hasLangGraphStateMachine ? 'healthy' : 'warning',
+      message: hasLangGraphStateMachine
+        ? 'State graph detected in app/lib/orchestration.server.ts'
+        : 'State graph markers not found in app/lib/orchestration.server.ts',
       updatedAt: new Date(),
     },
   ];

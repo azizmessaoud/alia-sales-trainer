@@ -8,7 +8,7 @@
  * Only renders on client-side
  */
 
-import { useEffect, useRef, useState, lazy, Suspense } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useImperativeHandle, forwardRef } from 'react';
 import LipSyncAnimator from '~/lib/lip-sync-animator.client';
 import type { LipSyncDebugStats } from '~/lib/lip-sync-animator.client';
@@ -24,12 +24,363 @@ export interface VisemeData {
   viseme: string;
 }
 
+export type Emotion =
+  | 'neutral'
+  | 'happy'
+  | 'friendly'
+  | 'empathetic'
+  | 'reassuring'
+  | 'sad'
+  | 'disappointed'
+  | 'surprised'
+  | 'interested'
+  | 'thinking'
+  | 'concerned'
+  | 'skeptical'
+  | 'frustrated'
+  | 'attentive'
+  | 'confident';
+
 export interface AvatarProps {
   isSpeaking?: boolean;
-  emotion?: 'neutral' | 'happy' | 'sad' | 'surprised' | 'thinking';
+  isListening?: boolean;
+  emotion?: Emotion;
+  idleIntensity?: number;
   modelUrl?: string;
   className?: string;
 }
+
+interface BoneRotation {
+  x?: number;
+  y?: number;
+  z?: number;
+}
+
+type GestureTemplate = Record<string, BoneRotation>;
+
+type MoodState = 'idle' | 'speaking' | 'listening';
+
+interface MoodVariant {
+  p?: number;
+  blendshapes?: Record<string, number>;
+  bones?: Record<string, BoneRotation>;
+}
+
+interface MoodLayerSpec {
+  name: string;
+  interval: [number, number];
+  duration: [number, number];
+  default?: MoodVariant;
+  idle?: MoodVariant;
+  speaking?: MoodVariant;
+  listening?: MoodVariant;
+  alt?: MoodVariant[];
+}
+
+interface MoodProfile {
+  baseline: Record<string, number>;
+  layers: MoodLayerSpec[];
+}
+
+const GESTURE_TEMPLATES: Record<string, GestureTemplate> = {
+  handup: {
+    'LeftShoulder.rotation': { x: 0.675, y: 0.135, z: -0.63 },
+    'LeftArm.rotation': { x: 0.72, y: -0.225, z: 0.495 },
+    'LeftForeArm.rotation': { x: -0.36, y: -0.18, z: 0.72 },
+    'LeftHand.rotation': { x: -0.225, y: -0.09, z: 0.0 },
+    'LeftHandIndex1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandMiddle1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandRing1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandPinky1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandThumb1.rotation': { x: 0.135, y: 0.18, z: 0.09 },
+  },
+  index: {
+    'LeftShoulder.rotation': { x: 1.2, y: 0.2, z: -1.2 },
+    'LeftArm.rotation': { x: 1.4, y: -0.4, z: 0.9 },
+    'LeftForeArm.rotation': { x: -0.6, y: -0.3, z: 1.4 },
+    'LeftHand.rotation': { x: -0.3, y: -0.1, z: 0.0 },
+    'LeftHandIndex1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandIndex2.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandIndex3.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandMiddle1.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandMiddle2.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandRing1.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandRing2.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandPinky1.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandPinky2.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandThumb1.rotation': { x: 0.5, y: 0.5, z: 0.3 },
+  },
+  ok: {
+    'LeftShoulder.rotation': { x: 1.0, y: 0.2, z: -1.1 },
+    'LeftArm.rotation': { x: 1.2, y: -0.3, z: 0.8 },
+    'LeftForeArm.rotation': { x: -0.5, y: -0.2, z: 1.2 },
+    'LeftHand.rotation': { x: -0.2, y: 0.0, z: 0.0 },
+    'LeftHandIndex1.rotation': { x: 0.8, y: 0.0, z: 0.0 },
+    'LeftHandIndex2.rotation': { x: 0.8, y: 0.0, z: 0.0 },
+    'LeftHandMiddle1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandRing1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandPinky1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandThumb1.rotation': { x: 0.8, y: 0.6, z: 0.4 },
+    'LeftHandThumb2.rotation': { x: 0.6, y: 0.0, z: 0.0 },
+  },
+  thumbup: {
+    'LeftShoulder.rotation': { x: 0.52, y: 0.065, z: -0.65 },
+    'LeftArm.rotation': { x: 0.65, y: -0.195, z: 0.455 },
+    'LeftForeArm.rotation': { x: -0.26, y: -0.13, z: 0.715 },
+    'LeftHand.rotation': { x: -0.065, y: 0.195, z: 0.0 },
+    'LeftHandIndex1.rotation': { x: 0.91, y: 0.0, z: 0.0 },
+    'LeftHandIndex2.rotation': { x: 0.91, y: 0.0, z: 0.0 },
+    'LeftHandMiddle1.rotation': { x: 0.91, y: 0.0, z: 0.0 },
+    'LeftHandMiddle2.rotation': { x: 0.91, y: 0.0, z: 0.0 },
+    'LeftHandRing1.rotation': { x: 0.91, y: 0.0, z: 0.0 },
+    'LeftHandRing2.rotation': { x: 0.91, y: 0.0, z: 0.0 },
+    'LeftHandPinky1.rotation': { x: 0.91, y: 0.0, z: 0.0 },
+    'LeftHandPinky2.rotation': { x: 0.91, y: 0.0, z: 0.0 },
+    'LeftHandThumb1.rotation': { x: -0.13, y: 0.13, z: -0.195 },
+    'LeftHandThumb2.rotation': { x: -0.13, y: 0.0, z: 0.0 },
+  },
+  thumbdown: {
+    'LeftShoulder.rotation': { x: 0.8, y: 0.1, z: -1.0 },
+    'LeftArm.rotation': { x: 1.0, y: -0.3, z: 0.7 },
+    'LeftForeArm.rotation': { x: -0.4, y: -0.2, z: 1.1 },
+    'LeftHand.rotation': { x: -0.1, y: -0.3, z: 3.14 },
+    'LeftHandIndex1.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandIndex2.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandMiddle1.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandMiddle2.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandRing1.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandRing2.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandPinky1.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandPinky2.rotation': { x: 1.4, y: 0.0, z: 0.0 },
+    'LeftHandThumb1.rotation': { x: -0.2, y: 0.2, z: -0.3 },
+  },
+  side: {
+    'LeftShoulder.rotation': { x: 1.3, y: 0.5, z: -0.8 },
+    'LeftArm.rotation': { x: 1.5, y: -0.2, z: 0.5 },
+    'LeftForeArm.rotation': { x: -0.3, y: 0.1, z: 0.8 },
+    'LeftHand.rotation': { x: 0.2, y: 0.3, z: 0.3 },
+    'LeftHandIndex1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandMiddle1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandRing1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandPinky1.rotation': { x: 0.0, y: 0.0, z: 0.0 },
+    'LeftHandThumb1.rotation': { x: 0.2, y: 0.3, z: 0.1 },
+  },
+  shrug: {
+    'LeftShoulder.rotation': { x: 0.0, y: 0.0, z: -0.7 },
+    'LeftArm.rotation': { x: 0.2, y: 0.0, z: 0.6 },
+    'LeftForeArm.rotation': { x: 0.5, y: 0.0, z: 0.3 },
+    'RightShoulder.rotation': { x: 0.0, y: 0.0, z: 0.7 },
+    'RightArm.rotation': { x: 0.2, y: 0.0, z: -0.6 },
+    'RightForeArm.rotation': { x: 0.5, y: 0.0, z: -0.3 },
+    'Head.rotation': { x: 0.05, y: 0.0, z: 0.0 },
+    'Neck.rotation': { x: 0.05, y: 0.0, z: 0.0 },
+  },
+  namaste: {
+    'LeftShoulder.rotation': { x: 0.8, y: 0.1, z: -0.5 },
+    'LeftArm.rotation': { x: 1.0, y: -0.1, z: 0.4 },
+    'LeftForeArm.rotation': { x: 0.8, y: 0.0, z: 0.6 },
+    'LeftHand.rotation': { x: 0.0, y: 0.0, z: -0.2 },
+    'RightShoulder.rotation': { x: 0.8, y: -0.1, z: 0.5 },
+    'RightArm.rotation': { x: 1.0, y: 0.1, z: -0.4 },
+    'RightForeArm.rotation': { x: 0.8, y: 0.0, z: -0.6 },
+    'RightHand.rotation': { x: 0.0, y: 0.0, z: 0.2 },
+  },
+  nod: {
+    'Head.rotation': { x: 0.18, y: 0.0, z: 0.0 },
+    'Neck.rotation': { x: 0.12, y: 0.0, z: 0.0 },
+  },
+  small_nod: {
+    'Head.rotation': { x: 0.22, y: 0.0, z: 0.0 },
+  },
+  lean_forward: {
+    'Spine.rotation': { x: 0.25, y: 0.0, z: 0.0 },
+    'Head.rotation': { x: 0.12, y: 0.0, z: 0.0 },
+  },
+  open_palm: {
+    'LeftShoulder.rotation': { x: 0.6, y: 0.3, z: -0.4 },
+    'LeftArm.rotation': { x: 0.8, y: -0.2, z: 0.6 },
+    'LeftForeArm.rotation': { x: -0.3, y: -0.1, z: 1.1 },
+    'LeftHand.rotation': { x: 0.1, y: 0.4, z: 0.2 },
+  },
+  soft_shrug: {
+    'LeftShoulder.rotation': { x: 0.1, y: 0.0, z: -0.45 },
+    'RightShoulder.rotation': { x: 0.1, y: 0.0, z: 0.45 },
+    'Head.rotation': { x: 0.08, y: 0.05, z: 0.0 },
+  },
+};
+
+// Tuned Gesture Timing Curves (easy to adjust)
+const GESTURE_TIMING = {
+  defaultDuration: 3,
+  inRatio: 0.20,
+  outRatio: 0.25,
+  strength: 1.0,
+} as const;
+
+const easeInOutCubic = (p: number): number => {
+  return p < 0.5
+    ? 4 * p * p * p
+    : 1 - Math.pow(-2 * p + 2, 3) / 2;
+};
+
+const EMOTION_BLENDMAP: Record<Emotion, Record<string, number>> = {
+  neutral: {
+    mouthSmileLeft: 0, mouthSmileRight: 0,
+    mouthFrownLeft: 0, mouthFrownRight: 0,
+    browInnerUp: 0, browOuterUpLeft: 0, browOuterUpRight: 0,
+    browDownLeft: 0, browDownRight: 0,
+    eyeWideLeft: 0, eyeWideRight: 0,
+    eyeSquintLeft: 0, eyeSquintRight: 0,
+    jawOpen: 0, mouthPucker: 0, mouthFunnel: 0,
+    cheekPuff: 0, mouthRollLower: 0, mouthRollUpper: 0,
+    noseSneerLeft: 0, noseSneerRight: 0,
+    mouthPressLeft: 0, mouthPressRight: 0,
+  },
+  happy: { mouthSmileLeft: 0.65, mouthSmileRight: 0.65, cheekPuff: 0.22, eyeSquintLeft: 0.35, eyeSquintRight: 0.35 },
+  friendly: { mouthSmileLeft: 0.48, mouthSmileRight: 0.48, browInnerUp: 0.18, eyeSquintLeft: 0.2, eyeSquintRight: 0.2 },
+  empathetic: { mouthSmileLeft: 0.38, mouthSmileRight: 0.38, browInnerUp: 0.55, eyeSquintLeft: 0.28, eyeSquintRight: 0.28 },
+  reassuring: { mouthSmileLeft: 0.45, mouthSmileRight: 0.45, browInnerUp: 0.32, cheekPuff: 0.12 },
+  sad: { mouthFrownLeft: 0.55, mouthFrownRight: 0.55, browDownLeft: 0.42, browDownRight: 0.42, eyeSquintLeft: 0.3, eyeSquintRight: 0.3 },
+  disappointed: { mouthFrownLeft: 0.48, mouthFrownRight: 0.48, browInnerUp: 0.2, eyeSquintLeft: 0.25, eyeSquintRight: 0.25 },
+  surprised: { eyeWideLeft: 0.65, eyeWideRight: 0.65, browInnerUp: 0.58, browOuterUpLeft: 0.45, browOuterUpRight: 0.45, jawOpen: 0.18 },
+  interested: { browInnerUp: 0.52, eyeWideLeft: 0.28, eyeWideRight: 0.28, mouthSmileLeft: 0.18, mouthSmileRight: 0.18 },
+  thinking: { browInnerUp: 0.45, mouthRollLower: 0.32, eyeLookDownLeft: 0.18, eyeLookDownRight: 0.18 },
+  concerned: { browDownLeft: 0.52, browDownRight: 0.52, mouthFrownLeft: 0.25, mouthFrownRight: 0.25, eyeSquintLeft: 0.22, eyeSquintRight: 0.22 },
+  skeptical: { browOuterUpLeft: 0.45, browOuterUpRight: 0.18, mouthPressLeft: 0.32, mouthPressRight: 0.32, eyeSquintLeft: 0.35, eyeSquintRight: 0.18 },
+  frustrated: { browDownLeft: 0.48, browDownRight: 0.48, mouthPressLeft: 0.35, mouthPressRight: 0.35, noseSneerLeft: 0.15, noseSneerRight: 0.15 },
+  attentive: { browInnerUp: 0.38, eyeWideLeft: 0.25, eyeWideRight: 0.25, mouthSmileLeft: 0.12, mouthSmileRight: 0.12 },
+  confident: { mouthSmileLeft: 0.52, mouthSmileRight: 0.52, browInnerUp: 0.22, eyeSquintLeft: 0.15, eyeSquintRight: 0.15 },
+};
+
+const BASE_MOOD_LAYERS: MoodLayerSpec[] = [
+  {
+    name: 'breathing',
+    interval: [1200, 3400],
+    duration: [850, 1400],
+    default: { blendshapes: { browInnerUp: 0.02, mouthRollLower: 0.02 } },
+    speaking: { blendshapes: { browInnerUp: 0.015, mouthRollLower: 0.015 } },
+    listening: { blendshapes: { browInnerUp: 0.03, mouthRollLower: 0.01 } },
+  },
+  {
+    name: 'blink',
+    interval: [1000, 6000],
+    duration: [70, 150],
+    alt: [
+      { p: 0.84, blendshapes: { eyeBlinkLeft: 1, eyeBlinkRight: 1 } },
+      { p: 0.16, blendshapes: { eyeBlinkLeft: 1, eyeBlinkRight: 1, eyeSquintLeft: 0.12, eyeSquintRight: 0.12 } },
+    ],
+  },
+  {
+    name: 'head',
+    interval: [2400, 6400],
+    duration: [650, 1100],
+    default: {
+      bones: {
+        Head: { x: 0.03, y: 0.015, z: 0 },
+        Neck: { x: 0.02, y: 0, z: 0 },
+      },
+    },
+    speaking: {
+      bones: {
+        Head: { x: 0.055, y: 0.02, z: 0 },
+        Neck: { x: 0.03, y: 0, z: 0 },
+      },
+    },
+    listening: {
+      bones: {
+        Head: { x: 0.045, y: 0.01, z: 0 },
+        Neck: { x: 0.025, y: 0, z: 0 },
+      },
+    },
+  },
+  {
+    name: 'mouth',
+    interval: [1700, 5200],
+    duration: [420, 950],
+    default: { blendshapes: { mouthRollLower: 0.03, mouthRollUpper: 0.02 } },
+    speaking: { blendshapes: { mouthRollLower: 0.06, mouthRollUpper: 0.05, mouthPressLeft: 0.03, mouthPressRight: 0.03 } },
+    listening: { blendshapes: { mouthPressLeft: 0.04, mouthPressRight: 0.04, mouthRollLower: 0.015 } },
+    alt: [
+      { p: 0.7, blendshapes: { mouthPucker: 0.08, mouthRollLower: 0.04 } },
+      { p: 0.3, blendshapes: { mouthSmileLeft: 0.05, mouthSmileRight: 0.05 } },
+    ],
+  },
+  {
+    name: 'misc',
+    interval: [1400, 6200],
+    duration: [360, 900],
+    default: { blendshapes: { browInnerUp: 0.06, eyeSquintLeft: 0.04, eyeSquintRight: 0.04 } },
+    speaking: { blendshapes: { browInnerUp: 0.05, eyeSquintLeft: 0.03, eyeSquintRight: 0.03 } },
+    listening: { blendshapes: { browInnerUp: 0.08, eyeSquintLeft: 0.05, eyeSquintRight: 0.05 } },
+    alt: [
+      { p: 0.5, blendshapes: { browOuterUpLeft: 0.05, browOuterUpRight: 0.05 } },
+      { p: 0.5, blendshapes: { mouthSmileLeft: 0.04, mouthSmileRight: 0.04 } },
+    ],
+  },
+];
+
+const animMoods: Record<Emotion, MoodProfile> = {
+  neutral: {
+    baseline: { browInnerUp: 0.03, eyeSquintLeft: 0.02, eyeSquintRight: 0.02 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  happy: {
+    baseline: { mouthSmileLeft: 0.14, mouthSmileRight: 0.14, cheekPuff: 0.08, eyeSquintLeft: 0.06, eyeSquintRight: 0.06 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  friendly: {
+    baseline: { mouthSmileLeft: 0.1, mouthSmileRight: 0.1, browInnerUp: 0.08, eyeSquintLeft: 0.05, eyeSquintRight: 0.05 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  empathetic: {
+    baseline: { mouthSmileLeft: 0.08, mouthSmileRight: 0.08, browInnerUp: 0.18, eyeSquintLeft: 0.08, eyeSquintRight: 0.08 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  reassuring: {
+    baseline: { mouthSmileLeft: 0.1, mouthSmileRight: 0.1, browInnerUp: 0.1, cheekPuff: 0.04 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  sad: {
+    baseline: { mouthFrownLeft: 0.12, mouthFrownRight: 0.12, browDownLeft: 0.08, browDownRight: 0.08 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  disappointed: {
+    baseline: { mouthFrownLeft: 0.1, mouthFrownRight: 0.1, browInnerUp: 0.06, eyeSquintLeft: 0.04, eyeSquintRight: 0.04 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  surprised: {
+    baseline: { eyeWideLeft: 0.12, eyeWideRight: 0.12, browInnerUp: 0.1, browOuterUpLeft: 0.06, browOuterUpRight: 0.06 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  interested: {
+    baseline: { browInnerUp: 0.14, eyeWideLeft: 0.05, eyeWideRight: 0.05, mouthSmileLeft: 0.04, mouthSmileRight: 0.04 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  thinking: {
+    baseline: { browInnerUp: 0.1, mouthRollLower: 0.05, mouthPressLeft: 0.03, mouthPressRight: 0.03 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  concerned: {
+    baseline: { browDownLeft: 0.12, browDownRight: 0.12, mouthFrownLeft: 0.06, mouthFrownRight: 0.06 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  skeptical: {
+    baseline: { browOuterUpLeft: 0.1, browOuterUpRight: 0.04, mouthPressLeft: 0.08, mouthPressRight: 0.08 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  frustrated: {
+    baseline: { browDownLeft: 0.12, browDownRight: 0.12, mouthPressLeft: 0.1, mouthPressRight: 0.1, noseSneerLeft: 0.04, noseSneerRight: 0.04 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  attentive: {
+    baseline: { browInnerUp: 0.1, eyeWideLeft: 0.05, eyeWideRight: 0.05, mouthSmileLeft: 0.03, mouthSmileRight: 0.03 },
+    layers: BASE_MOOD_LAYERS,
+  },
+  confident: {
+    baseline: { mouthSmileLeft: 0.12, mouthSmileRight: 0.12, browInnerUp: 0.05, eyeSquintLeft: 0.03, eyeSquintRight: 0.03 },
+    layers: BASE_MOOD_LAYERS,
+  },
+};
 
 // VISEME_MORPH_MAP and ARKIT_BLENDSHAPES removed — LipSyncAnimator is the
 // sole driver of morph targets, using ARKit blendshape frames clocked to
@@ -58,6 +409,33 @@ export interface AvatarHandle {
   getAnimationLog: (limit?: number) => AnimationLogEntry[];
   /** Direct access to the primary morph-target mesh (for diagnostic bypass) */
   getMesh: () => any;
+  /**
+   * Play a TalkingHead-style bone gesture.
+   * @param name handup | index | ok | thumbup | thumbdown | side | shrug | namaste | nod | lean_forward | open_palm | soft_shrug | small_nod
+   * @param duration Seconds (default 3)
+   */
+  playGesture: (name: string, duration?: number, mirror?: boolean) => void;
+  playEmotion: (emotion: Emotion, duration?: number) => void;
+  setListening: (listening: boolean) => void;
+  clearGestures: () => void;
+  setMood: (mood: Emotion) => void;
+}
+
+interface GestureBoneEntry {
+  bone: any;
+  targetX: number;
+  targetY: number;
+  targetZ: number;
+  startX: number;
+  startY: number;
+  startZ: number;
+  restX: number;
+  restY: number;
+  restZ: number;
+  startTime: number;
+  inDuration: number;
+  holdDuration: number;
+  outDuration: number;
 }
 
 // =====================================================
@@ -68,7 +446,9 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
   (
     {
       isSpeaking = false,
+      isListening = false,
       emotion = 'neutral',
+      idleIntensity = 1,
       modelUrl = '/avatar.glb',
       className = ''
     },
@@ -80,14 +460,177 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
     const cameraRef = useRef<any>(null);
     const meshRef = useRef<any>(null);
     const allMorphMeshesRef = useRef<any[]>([]);
+    const blinkMirrorCacheRef = useRef<Array<{ mesh: any; blinkL: number; blinkR: number }>>([]);
     const animationRef = useRef<number>(0);
     const modelRef = useRef<any>(null);
     const lipSyncAnimatorRef = useRef<LipSyncAnimator | null>(null);
     const restPoseRef = useRef<{ positionY: number; rotationX: number; rotationY: number; rotationZ: number } | null>(null);
+    const boneRestPoseRef = useRef<Map<string, { x: number; y: number; z: number }>>(new Map());
+    const gestureBonesRef = useRef<GestureBoneEntry[]>([]);
+    const listeningRef = useRef<boolean>(isListening);
+    const moodRef = useRef<Emotion>(emotion);
+    const moodPulseRef = useRef<Array<{
+      id: string;
+      startTime: number;
+      duration: number;
+      blendshapes: Record<string, number>;
+      boneTargets: Array<{
+        bone: any;
+        startX: number;
+        startY: number;
+        startZ: number;
+        targetX: number;
+        targetY: number;
+        targetZ: number;
+      }>;
+    }>>([]);
+    const nextMoodPulseRef = useRef<number>(0);
+    const lastMoodStateRef = useRef<MoodState>('idle');
+    const lastMoodNameRef = useRef<Emotion>(emotion);
     
     const [isLoaded, setIsLoaded] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [usesFallback, setUsesFallback] = useState(false);
+
+    const getModelBoneNames = (root: any = modelRef.current): string[] => {
+      if (!root) return [];
+
+      const boneNames: string[] = [];
+      root.traverse((child: any) => {
+        if (child.isBone && typeof child.name === 'string' && child.name.length > 0) {
+          boneNames.push(child.name);
+        }
+      });
+
+      return boneNames;
+    };
+
+    const applyBlendshapesToMesh = (blendshapes: Record<string, number>) => {
+      if (!meshRef.current?.morphTargetInfluences) return;
+
+      const morphTargetDictionary = meshRef.current.morphTargetDictionary || {};
+      for (const [blendshapeName, value] of Object.entries(blendshapes)) {
+        if (blendshapeName in morphTargetDictionary) {
+          const index = morphTargetDictionary[blendshapeName];
+          if (index >= 0 && index < meshRef.current.morphTargetInfluences.length) {
+            meshRef.current.morphTargetInfluences[index] = Math.max(0, Math.min(1, value));
+          }
+        }
+      }
+    };
+
+    const applyEmotionToMesh = useCallback((targetEmotion: Emotion) => {
+      applyBlendshapesToMesh(EMOTION_BLENDMAP[targetEmotion] ?? EMOTION_BLENDMAP.neutral);
+    }, []);
+
+    const getMoodState = useCallback((): MoodState => {
+      if (listeningRef.current) return 'listening';
+      if (lipSyncAnimatorRef.current?.getIsPlaying?.()) return 'speaking';
+      return 'idle';
+    }, []);
+
+    const pickWeightedVariant = useCallback((variants: MoodVariant[]) => {
+      if (variants.length === 0) return null;
+      if (variants.length === 1) return variants[0];
+
+      const coin = Math.random();
+      let cumulative = 0;
+      for (let index = 0; index < variants.length; index += 1) {
+        const variant = variants[index];
+        const remaining = 1 - cumulative;
+        const probability = typeof variant.p === 'number'
+          ? variant.p
+          : remaining / (variants.length - index);
+        cumulative += probability;
+        if (coin < cumulative) return variant;
+      }
+
+      return variants[variants.length - 1];
+    }, []);
+
+    const resolveLayerVariant = useCallback((layer: MoodLayerSpec, state: MoodState) => {
+      const baseVariant = layer[state] ?? layer.default ?? layer.idle ?? layer.speaking ?? layer.listening ?? null;
+      const variantPool: MoodVariant[] = [];
+
+      if (baseVariant) {
+        variantPool.push(baseVariant as MoodVariant);
+      }
+      if (layer.alt?.length) {
+        variantPool.push(...layer.alt);
+      }
+
+      if (variantPool.length > 0) {
+        return pickWeightedVariant(variantPool);
+      }
+      return null;
+    }, [pickWeightedVariant]);
+
+    const startMoodPulse = useCallback((layer: MoodLayerSpec, state: MoodState, nowMs: number) => {
+      if (!modelRef.current) return;
+      const variant = resolveLayerVariant(layer, state);
+      if (!variant) return;
+
+      const duration = layer.duration[0] + Math.random() * Math.max(0, layer.duration[1] - layer.duration[0]);
+      const pulse = {
+        id: `${layer.name}-${nowMs}-${Math.random().toString(36).slice(2, 8)}`,
+        startTime: nowMs,
+        duration,
+        blendshapes: variant.blendshapes ?? {},
+        boneTargets: [] as Array<{
+          bone: any;
+          startX: number;
+          startY: number;
+          startZ: number;
+          targetX: number;
+          targetY: number;
+          targetZ: number;
+        }>,
+      };
+
+      if (variant.bones) {
+        modelRef.current.traverse((child: any) => {
+          if (!child.isBone) return;
+          const target = variant.bones?.[child.name];
+          if (!target) return;
+          pulse.boneTargets.push({
+            bone: child,
+            startX: child.rotation.x,
+            startY: child.rotation.y,
+            startZ: child.rotation.z,
+            targetX: target.x ?? child.rotation.x,
+            targetY: target.y ?? child.rotation.y,
+            targetZ: target.z ?? child.rotation.z,
+          });
+        });
+      }
+
+      moodPulseRef.current.push(pulse);
+    }, [resolveLayerVariant]);
+
+    const applyMoodBaseline = useCallback((targetMood: Emotion) => {
+      if (!meshRef.current?.morphTargetInfluences) return;
+      const baseline = animMoods[targetMood]?.baseline ?? animMoods.neutral.baseline;
+      applyBlendshapesToMesh(baseline);
+    }, []);
+
+    const restoreActiveGesturesToRest = useCallback(() => {
+      if (gestureBonesRef.current.length === 0) return;
+      for (const gesture of gestureBonesRef.current) {
+        gesture.bone.rotation.x = gesture.restX;
+        gesture.bone.rotation.y = gesture.restY;
+        gesture.bone.rotation.z = gesture.restZ;
+      }
+      gestureBonesRef.current = [];
+    }, []);
+
+    const setMoodInternal = useCallback((targetMood: Emotion) => {
+      moodRef.current = targetMood;
+      lastMoodNameRef.current = targetMood;
+      nextMoodPulseRef.current = 0;
+      moodPulseRef.current = [];
+      applyEmotionToMesh(targetMood);
+      applyMoodBaseline(targetMood);
+    }, [applyEmotionToMesh, applyMoodBaseline]);
 
     // Expose methods to parent component
     useImperativeHandle(ref, () => ({
@@ -110,10 +653,15 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
         (lipSyncAnimatorRef.current as any).speakingFactor = 1;
         lipSyncAnimatorRef.current.play(startTime);
 
-        // Capture diagnostics after playback starts so applied runtime values are meaningful.
-        setTimeout(() => {
-          lipSyncAnimatorRef.current?.dumpFullDiagnostics();
-        }, 300);
+        const shouldDumpDiagnostics =
+          typeof window !== 'undefined' &&
+          (window as any).__ALIA_DUMP_LIPSYNC_DIAGNOSTICS__ === true;
+        if (shouldDumpDiagnostics) {
+          // Capture diagnostics after playback starts so applied runtime values are meaningful.
+          setTimeout(() => {
+            lipSyncAnimatorRef.current?.dumpFullDiagnostics();
+          }, 300);
+        }
       },
       pauseLipSync: () => {
         lipSyncAnimatorRef.current?.setIsSpeaking(false);
@@ -155,26 +703,89 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
         return lipSyncAnimatorRef.current?.getAnimationLog?.(limit) ?? [];
       },
       getMesh: () => meshRef.current ?? null,
-    }), []);
+      playGesture: (name: string, duration: number = GESTURE_TIMING.defaultDuration, mirror: boolean = false) => {
+        if (!modelRef.current) return;
+        restoreActiveGesturesToRest();
 
-    // Apply blendshapes directly to mesh (without LipSyncAnimator)
-    const applyBlendshapesToMesh = (blendshapes: Record<string, number>) => {
-      if (!meshRef.current?.morphTargetInfluences) return;
-
-      const morphTargetDictionary = meshRef.current.morphTargetDictionary || {};
-      
-      for (const [blendshapeName, value] of Object.entries(blendshapes)) {
-        if (blendshapeName in morphTargetDictionary) {
-          const index = morphTargetDictionary[blendshapeName];
-          if (index >= 0 && index < meshRef.current.morphTargetInfluences.length) {
-            meshRef.current.morphTargetInfluences[index] = Math.max(
-              0,
-              Math.min(1, value)
-            );
-          }
+        const template = GESTURE_TEMPLATES[name];
+        if (!template) {
+          console.warn(`[Avatar] Unknown gesture "${name}"`);
+          return;
         }
-      }
-    };
+
+        let resolvedTemplate: GestureTemplate = template;
+        if (mirror) {
+          const mirrored: GestureTemplate = {};
+          for (const [key, value] of Object.entries(template)) {
+            const mk = key.startsWith('Left')
+              ? key.replace(/^Left/, 'Right')
+              : key.startsWith('Right')
+                ? key.replace(/^Right/, 'Left')
+                : key;
+            mirrored[mk] = value;
+          }
+          resolvedTemplate = mirrored;
+        }
+
+        const totalMs = duration * 1000;
+        const inMs = Math.max(320, Math.min(600, totalMs * GESTURE_TIMING.inRatio));
+        const outMs = Math.max(420, Math.min(800, totalMs * GESTURE_TIMING.outRatio));
+        const holdMs = Math.max(400, totalMs - inMs - outMs);
+        const now = performance.now();
+        const entries: GestureBoneEntry[] = [];
+
+        modelRef.current.traverse((child: any) => {
+          if (!child.isBone) return;
+          const rotation = resolvedTemplate[`${child.name}.rotation`];
+          if (!rotation) return;
+          const rest = boneRestPoseRef.current.get(child.name) ?? {
+            x: child.rotation.x,
+            y: child.rotation.y,
+            z: child.rotation.z,
+          };
+          entries.push({
+            bone: child,
+            targetX: rest.x + (rotation.x ?? 0) * GESTURE_TIMING.strength,
+            targetY: rest.y + (rotation.y ?? 0) * GESTURE_TIMING.strength,
+            targetZ: rest.z + (rotation.z ?? 0) * GESTURE_TIMING.strength,
+            startX: child.rotation.x,
+            startY: child.rotation.y,
+            startZ: child.rotation.z,
+            restX: rest.x,
+            restY: rest.y,
+            restZ: rest.z,
+            startTime: now,
+            inDuration: inMs,
+            holdDuration: holdMs,
+            outDuration: outMs,
+          });
+        });
+
+        gestureBonesRef.current = entries;
+        console.log(`🎭 Gesture "${name}" (mirror=${mirror}) — ${entries.length} bones | in:${inMs.toFixed(0)}ms hold:${holdMs.toFixed(0)}ms out:${outMs.toFixed(0)}ms`);
+        if (entries.length > 0) {
+          const first = entries[0];
+          console.log(
+            `[Gesture] ${first.bone.name} rest:(${first.restX.toFixed(3)}, ${first.restY.toFixed(3)}, ${first.restZ.toFixed(3)}) -> target:(${first.targetX.toFixed(3)}, ${first.targetY.toFixed(3)}, ${first.targetZ.toFixed(3)})`
+          );
+        }
+      },
+      playEmotion: (targetEmotion: Emotion, duration: number = 0) => {
+        applyEmotionToMesh(targetEmotion);
+        if (duration > 0) {
+          window.setTimeout(() => applyEmotionToMesh(emotion), duration * 1000);
+        }
+      },
+      setListening: (listening: boolean) => {
+        listeningRef.current = listening;
+      },
+      clearGestures: () => {
+        restoreActiveGesturesToRest();
+      },
+      setMood: (targetMood: Emotion) => {
+        setMoodInternal(targetMood);
+      },
+    }), [applyEmotionToMesh, emotion, restoreActiveGesturesToRest, setMoodInternal]);
 
   // Initialize Three.js scene
   useEffect(() => {
@@ -263,6 +874,23 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
             
             scene.add(model);
             modelRef.current = model;
+
+            const boneRestPose = new Map<string, { x: number; y: number; z: number }>();
+            model.traverse((child: any) => {
+              if (!child.isBone) return;
+              boneRestPose.set(child.name, {
+                x: child.rotation.x,
+                y: child.rotation.y,
+                z: child.rotation.z,
+              });
+            });
+            boneRestPoseRef.current = boneRestPose;
+
+            const boneNames = getModelBoneNames(model);
+            console.log(`🦴 GLB skeleton detected: ${boneNames.length} bones`);
+            if (boneNames.length > 0) {
+              console.log('[Avatar] GLB bone names:\n' + boneNames.join('\n'));
+            }
             
             // Find meshes with morph targets for lip-sync
             let morphTargetCount = 0;
@@ -294,6 +922,15 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
                 additionalMeshes,
                 smoothing: 0.15,
               });
+
+              blinkMirrorCacheRef.current = additionalMeshes
+                .filter((m: any) => m?.morphTargetInfluences && m?.morphTargetDictionary)
+                .map((m: any) => ({
+                  mesh: m,
+                  blinkL: m.morphTargetDictionary['eyeBlinkLeft'] ?? -1,
+                  blinkR: m.morphTargetDictionary['eyeBlinkRight'] ?? -1,
+                }))
+                .filter((entry) => entry.blinkL !== -1 || entry.blinkR !== -1);
             }
             
             if (morphTargetCount > 0) {
@@ -381,6 +1018,7 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
             meshRef.current = head;
             modelRef.current = head;
             allMorphMeshesRef.current = [head];
+            blinkMirrorCacheRef.current = [];
             lipSyncAnimatorRef.current = new LipSyncAnimator({
               mesh: head,
               additionalMeshes: [],
@@ -435,6 +1073,7 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
         let gazeCurrX = 0;
         let gazeCurrY = 0;
         let nextGazeShift = Date.now() + 1500 + Math.random() * 2000;
+        let prevBlinkVal = -1;
 
         // Animation loop
         const animate = (timestamp: number) => {
@@ -447,7 +1086,8 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
             const t = Date.now() * 0.001;
             const restPose = restPoseRef.current;
             const speakingNow = lipSyncAnimatorRef.current?.getIsPlaying() ?? false;
-            const motionScale = speakingNow ? 0.5 : 1;
+            const motionScale = (speakingNow ? 0.5 : 1) * Math.max(0, Math.min(1, idleIntensity));
+            const listeningLift = listeningRef.current ? 0.01 * motionScale : 0;
             const breathRock = Math.sin(t * 1.8) * 0.004 * motionScale;
             const headSway = Math.sin(t * 0.55) * 0.02 * motionScale;
             const headNod = Math.sin(t * 0.32 + 0.8) * 0.01 * motionScale;
@@ -456,11 +1096,11 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
             if (restPose) {
               modelRef.current.position.y = restPose.positionY + torsoShift;
               modelRef.current.rotation.y = restPose.rotationY + headSway;
-              modelRef.current.rotation.x = restPose.rotationX + headNod + breathRock;
+              modelRef.current.rotation.x = restPose.rotationX + headNod + breathRock + listeningLift;
               modelRef.current.rotation.z = restPose.rotationZ + Math.sin(t * 0.28) * 0.006 * motionScale;
             } else {
               modelRef.current.rotation.y = headSway;
-              modelRef.current.rotation.x = headNod + breathRock;
+              modelRef.current.rotation.x = headNod + breathRock + listeningLift;
               modelRef.current.rotation.z = Math.sin(t * 0.28) * 0.006 * motionScale;
             }
           }
@@ -468,8 +1108,121 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
           // Drive lip-sync morph targets — MUST be before renderer.render()
           lipSyncAnimatorRef.current?.update(timestamp);
 
-          // Procedural eye blink (more frequent during speech: 2-3.5s vs 3-5s idle)
+          // Reapply mood baseline after lip-sync so mood channels are additive and never overwritten.
+          if (meshRef.current?.morphTargetInfluences) {
+            const baseline = animMoods[moodRef.current]?.baseline ?? {};
+            const dict = meshRef.current.morphTargetDictionary ?? {};
+            for (const [name, value] of Object.entries(baseline)) {
+              const idx = dict[name];
+              if (idx !== undefined) {
+                meshRef.current.morphTargetInfluences[idx] = Math.max(
+                  meshRef.current.morphTargetInfluences[idx] ?? 0,
+                  value
+                );
+              }
+            }
+          }
+
+          if (gestureBonesRef.current.length > 0) {
+            const nowG = performance.now();
+            gestureBonesRef.current = gestureBonesRef.current.filter((g) => {
+              const elapsed = nowG - g.startTime;
+              const totalDuration = g.inDuration + g.holdDuration + g.outDuration;
+
+              let rx: number;
+              let ry: number;
+              let rz: number;
+
+              if (elapsed < g.inDuration) {
+                const p = elapsed / g.inDuration;
+                const eased = easeInOutCubic(p);
+                rx = g.startX + (g.targetX - g.startX) * eased;
+                ry = g.startY + (g.targetY - g.startY) * eased;
+                rz = g.startZ + (g.targetZ - g.startZ) * eased;
+              } else if (elapsed < g.inDuration + g.holdDuration) {
+                rx = g.targetX;
+                ry = g.targetY;
+                rz = g.targetZ;
+              } else if (elapsed < totalDuration) {
+                const p = (elapsed - g.inDuration - g.holdDuration) / g.outDuration;
+                const eased = easeInOutCubic(p);
+                rx = g.targetX + (g.restX - g.targetX) * eased;
+                ry = g.targetY + (g.restY - g.targetY) * eased;
+                rz = g.targetZ + (g.restZ - g.targetZ) * eased;
+              } else {
+                g.bone.rotation.x = g.restX;
+                g.bone.rotation.y = g.restY;
+                g.bone.rotation.z = g.restZ;
+                return false;
+              }
+
+              g.bone.rotation.x = rx;
+              g.bone.rotation.y = ry;
+              g.bone.rotation.z = rz;
+              return true;
+            });
+          }
+
           const nowMs = Date.now();
+          const currentMood = moodRef.current;
+          const currentMoodState = getMoodState();
+          const moodProfile = animMoods[currentMood] ?? animMoods.neutral;
+
+          if (currentMood !== lastMoodNameRef.current || currentMoodState !== lastMoodStateRef.current) {
+            lastMoodNameRef.current = currentMood;
+            lastMoodStateRef.current = currentMoodState;
+            nextMoodPulseRef.current = 0;
+          }
+
+          if (nowMs >= nextMoodPulseRef.current) {
+            const layer = moodProfile.layers[Math.floor(Math.random() * moodProfile.layers.length)];
+            if (layer) {
+              startMoodPulse(layer, currentMoodState, nowMs);
+            }
+
+            const idleMultiplier = Math.max(0.6, Math.min(1.4, idleIntensity));
+            const nextWindow = currentMoodState === 'speaking'
+              ? [900, 2600]
+              : currentMoodState === 'listening'
+                ? [1200, 3400]
+                : [1500, 5200];
+            nextMoodPulseRef.current = nowMs + nextWindow[0] + Math.random() * (nextWindow[1] - nextWindow[0]) * idleMultiplier;
+          }
+
+          if (moodPulseRef.current.length > 0 && meshRef.current?.morphTargetInfluences) {
+            moodPulseRef.current = moodPulseRef.current.filter((pulse) => {
+              const progress = Math.min((nowMs - pulse.startTime) / pulse.duration, 1);
+              const eased = progress < 0.5
+                ? 2 * progress * progress
+                : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+              for (const [blendshapeName, value] of Object.entries(pulse.blendshapes)) {
+                const index = meshRef.current.morphTargetDictionary?.[blendshapeName];
+                if (index !== undefined && index >= 0 && index < meshRef.current.morphTargetInfluences.length) {
+                  const currentValue = meshRef.current.morphTargetInfluences[index] ?? 0;
+                  meshRef.current.morphTargetInfluences[index] = Math.max(currentValue, Math.max(0, Math.min(1, value * eased)));
+                }
+              }
+
+              for (const target of pulse.boneTargets) {
+                target.bone.rotation.x = target.startX + (target.targetX - target.startX) * eased;
+                target.bone.rotation.y = target.startY + (target.targetY - target.startY) * eased;
+                target.bone.rotation.z = target.startZ + (target.targetZ - target.startZ) * eased;
+              }
+
+              if (progress >= 1) {
+                for (const target of pulse.boneTargets) {
+                  target.bone.rotation.x = target.startX;
+                  target.bone.rotation.y = target.startY;
+                  target.bone.rotation.z = target.startZ;
+                }
+                return false;
+              }
+              return true;
+            });
+          }
+
+          // Procedural eye blink (more frequent during speech: 2-3.5s vs 3-5s idle)
           const isSpeakingNow = lipSyncAnimatorRef.current?.getIsPlaying() ?? false;
           if (nowMs >= nextBlinkTime) {
             blinkStart = nowMs;
@@ -576,14 +1329,14 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
               }
             }
 
-            // Mirror blink/gaze to additional meshes
-            for (const extraMesh of allMorphMeshesRef.current) {
-              if (extraMesh === meshRef.current || !extraMesh.morphTargetInfluences || !extraMesh.morphTargetDictionary) continue;
-              const ed = extraMesh.morphTargetDictionary;
-              const eBL = ed['eyeBlinkLeft'];
-              const eBR = ed['eyeBlinkRight'];
-              if (eBL !== undefined) extraMesh.morphTargetInfluences[eBL] = blinkVal;
-              if (eBR !== undefined) extraMesh.morphTargetInfluences[eBR] = blinkVal;
+            // Mirror blink only when the value materially changes.
+            if (Math.abs(blinkVal - prevBlinkVal) > 0.005) {
+              prevBlinkVal = blinkVal;
+              for (const { mesh: extraMesh, blinkL: eBL, blinkR: eBR } of blinkMirrorCacheRef.current) {
+                if (!extraMesh?.morphTargetInfluences) continue;
+                if (eBL !== -1) extraMesh.morphTargetInfluences[eBL] = blinkVal;
+                if (eBR !== -1) extraMesh.morphTargetInfluences[eBR] = blinkVal;
+              }
             }
           }
           
@@ -634,6 +1387,14 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
   useEffect(() => {
     lipSyncAnimatorRef.current?.setIsSpeaking(isSpeaking);
   }, [isSpeaking]);
+
+  useEffect(() => {
+    listeningRef.current = isListening;
+  }, [isListening]);
+
+  useEffect(() => {
+    setMoodInternal(emotion);
+  }, [emotion, setMoodInternal]);
   
   // Emotion changes
   useEffect(() => {
@@ -642,9 +1403,19 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
     const colors: Record<string, number> = {
       neutral: 0x4a90d9,
       happy: 0x5cb85c,
+      friendly: 0x5cb85c,
+      empathetic: 0x5bc0de,
+      reassuring: 0x4a90d9,
       sad: 0x5bc0de,
+      disappointed: 0x6f7d8c,
       surprised: 0xf0ad4e,
+      interested: 0x4a90d9,
       thinking: 0x9b59b6,
+      concerned: 0xd9534f,
+      skeptical: 0xf0ad4e,
+      frustrated: 0xd9534f,
+      attentive: 0x5cb85c,
+      confident: 0x5cb85c,
     };
     
     // Only apply color changes if using fallback sphere
@@ -654,9 +1425,9 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
         material.color.setHex(colors[emotion] || colors.neutral);
       }
     } else {
-      // GLB model — emotion changes could drive expressions
+      // GLB model expressions are already applied by the emotion effect above.
     }
-  }, [emotion, isLoaded, usesFallback]);
+  }, [emotion, isLoaded, usesFallback, applyEmotionToMesh]);
 
   return (
     <div className={`avatar-container ${className}`} style={{ position: 'relative', width: '100%', height: '100%', minHeight: '300px' }}>
@@ -779,6 +1550,16 @@ export const Avatar = forwardRef<AvatarHandle, AvatarProps>((props, ref) => {
     getAnimationLog: (limit?: number) =>
       avatarRef.current?.getAnimationLog(limit) ?? [],
     getMesh: () => avatarRef.current?.getMesh() ?? null,
+    playGesture: (name: string, duration?: number, mirror?: boolean) =>
+      avatarRef.current?.playGesture(name, duration, mirror),
+    playEmotion: (emotion: Emotion, duration?: number) =>
+      avatarRef.current?.playEmotion(emotion, duration),
+    setListening: (listening: boolean) =>
+      avatarRef.current?.setListening(listening),
+    clearGestures: () =>
+      avatarRef.current?.clearGestures(),
+    setMood: (mood: Emotion) =>
+      avatarRef.current?.setMood(mood),
   }), []);
 
   if (!isClient) {

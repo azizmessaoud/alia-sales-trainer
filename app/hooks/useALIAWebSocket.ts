@@ -30,6 +30,12 @@ export interface PipelineBreakdown {
   lipsyncTime: number;
 }
 
+export interface STTResult {
+  text: string;
+  confidence: number | null;
+  language: string | null;
+}
+
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
 export interface UseALIAWebSocketOptions {
@@ -53,6 +59,8 @@ export interface UseALIAWebSocketOptions {
   onPipelineComplete?: (totalTime: number, breakdown: PipelineBreakdown) => void;
   /** Fired on each pipeline stage change */
   onStageChange?: (stage: string) => void;
+  /** Fired when server-side STT returns transcript */
+  onSTTResult?: (result: STTResult) => void;
   /** Fired on errors from the server */
   onError?: (message: string) => void;
   /** Fired when session is started */
@@ -91,6 +99,7 @@ export function useALIAWebSocket(
     onLipSync,
     onPipelineComplete,
     onStageChange,
+    onSTTResult,
     onError,
     onSessionStarted,
   } = options;
@@ -215,6 +224,16 @@ export function useALIAWebSocket(
       case 'stage':
         setCurrentStage(payload?.stage ?? null);
         if (payload?.stage) cbRef.current.onStageChange?.(payload.stage);
+        break;
+
+      case 'stt_result':
+        if (typeof payload?.text === 'string' && payload.text.trim()) {
+          cbRef.current.onSTTResult?.({
+            text: payload.text,
+            confidence: typeof payload?.confidence === 'number' ? payload.confidence : null,
+            language: typeof payload?.language === 'string' ? payload.language : null,
+          });
+        }
         break;
 
       case 'llm_text':

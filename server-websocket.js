@@ -8,6 +8,7 @@
  *   { type: 'start_session', payload: { rep_id, session_id } }
  *   { type: 'end_session',   payload: { session_id } }
  *   { type: 'chat',          payload: { message } }
+ *   { type: 'stt_audio',     payload: { audio, language? } }
  *   { type: 'interrupt' }
  *
  * Protocol (Server → Client):
@@ -20,6 +21,7 @@
  *   { type: 'tts_audio',            payload: { audio, duration, ttsTime } }
  *   { type: 'lipsync_blendshapes',  payload: { blendshapes, lipsyncTime } }
  *   { type: 'tts_done',             payload: { durationMs } }
+ *   { type: 'stt_result',           payload: { text, confidence, language } }
  *   { type: 'pipeline_complete',    payload: { totalTime, breakdown } }
  *   { type: 'error',                payload: { message } }
  */
@@ -55,6 +57,7 @@ import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import OpenAI from 'openai';
 import crypto from 'node:crypto';
+import { runSTT } from './app/lib/stt.server.js';
 
 // ─────────────────────────────────────────────────
 // Configuration
@@ -150,6 +153,8 @@ async function handleMessage(ws, msg) {
       return handleEndSession(ws, msg.payload || {});
     case 'chat':
       return handleChat(ws, msg.payload || {});
+    case 'stt_audio':
+      return handleSTTAudio(ws, msg.payload || {});
     case 'cv_metrics':
       return handleCVMetrics(ws, msg.payload || {});
     case 'interrupt':
@@ -357,6 +362,50 @@ async function handleChat(ws, { message }) {
     send(ws, 'error', { message: `Orchestration failed: ${error.message}` });
   } finally {
     clientState.abortController = null;
+  }
+}
+
+async function handleSTTAudio(ws, { audio, language }) {
+  if (typeof audio !== 'string' || !audio.trim()) {
+    return send(ws, 'error', { message: 'No audio payload' });
+  }
+
+  const clientState = clients.get(ws);
+  let session_id = clientState?.session_id;
+  if (!session_id) {
+    session_id = crypto.randomUUID();
+    handleStartSession(ws, { session_id });
+  }
+
+  const session = sessions.get(session_id);
+  const lang = language || session?.language || 'en-US';
+
+  try {
+    const audioBuffer = Buffer.from(audio, 'base64');
+    if (!audioBuffer.length) {
+      return send(ws, 'error', { message: 'Invalid audio payload' });
+    }
+
+    send(ws, 'stage', { stage: 'stt_processing' });
+    const sttResult = await runSTT(audioBuffer, lang);
+
+    if (!sttResult?.text) {
+      return send(ws, 'error', {
+        message: 'Speech not recognized. Please speak clearly and try again.',
+      });
+    }
+
+    send(ws, 'stt_result', {
+      text: sttResult.text,
+      confidence: sttResult.confidence,
+      language: sttResult.language || lang,
+    });
+
+    return handleChat(ws, { message: sttResult.text });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[WS] STT error:', message);
+    return send(ws, 'error', { message: `STT failed: ${message}` });
   }
 }
 

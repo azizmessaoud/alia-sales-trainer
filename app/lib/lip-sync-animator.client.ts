@@ -81,6 +81,19 @@ const VISEME_RUNTIME_CAP: Record<string, number> = {
   viseme_u: 0.38,
 };
 
+const EMOTION_CHANNEL_PREFIXES = [
+  'mouthsmile',
+  'mouthfrown',
+  'browdown',
+  'browinnerup',
+  'browouterup',
+  'eyewide',
+  'eyesquint',
+  'cheekpuff',
+  'nosesneer',
+  'mouthpress',
+];
+
 /**
  * NVIDIA Audio2Face-3D ARKit 52 → ReadyPlayerMe Complete Mapping
  * Verified against Wolf3D_Head (67 morph targets)
@@ -606,25 +619,6 @@ export class LipSyncAnimator {
   update(timestamp: number): void {
     const now = timestamp;
 
-    // TalkingHead-style idle + mode head motion (additive, subtle)
-    const idleMotionTime = Date.now() * 0.001;
-    const isIdleMode = this.modeRef === 'idle';
-    const yawAmp = isIdleMode
-      ? 0.018
-      : this.modeRef === 'teaching'
-        ? 0.032
-        : this.modeRef === 'presenting'
-          ? 0.024
-          : 0.014;
-    const pitchAmp = (this.modeRef === 'listening' || this.modeRef === 'interview') ? 0.016 : 0.008;
-    const breathAmp = isIdleMode ? 0.0045 : 0.0028;
-
-    if (this.mesh.parent) {
-      this.mesh.parent.rotation.y = Math.sin(idleMotionTime * 0.55) * yawAmp;
-      this.mesh.parent.rotation.x = Math.sin(idleMotionTime * 0.38) * pitchAmp + Math.sin(idleMotionTime * 1.9) * breathAmp;
-      if (isIdleMode) this.mesh.parent.rotation.z = Math.sin(idleMotionTime * 0.8) * 0.008;
-    }
-
     if (!this.isPlaying || this.blendshapeData.length === 0) return;
 
     if (this._firstUpdatePending) {
@@ -773,18 +767,21 @@ export class LipSyncAnimator {
 
       // RPM-specific damping: allow stronger vowel articulation while keeping clip protection.
       const lower = blendshapeName.toLowerCase();
+      const isEmotionChannel = EMOTION_CHANNEL_PREFIXES.some((prefix) => lower.startsWith(prefix));
       if (lower === 'jawopen' || blendshapeName === 'jawOpen') {
         // Keep silence closure intact while still boosting weak jaw streams.
         interpolated = Math.min(interpolated * 3.8, 0.72);
         if (this._peakJaw < interpolated) this._peakJaw = interpolated;
       } else if (lower.includes('mouth') || lower.includes('lip')) {
-        interpolated = Math.min(interpolated * 0.65, 0.30);
+        if (!isEmotionChannel) {
+          interpolated = Math.min(interpolated * 0.65, 0.30);
 
-        // Prevent wide grin artifacts on RPM during SS/E/I visemes.
-        if (lower.includes('mouthstretch')) {
-          interpolated = Math.min(interpolated * 0.35, 0.08);
-        } else if (lower.includes('mouthsmile')) {
-          interpolated = Math.min(interpolated * 0.45, 0.10);
+          // Prevent wide grin artifacts on RPM during SS/E/I visemes.
+          if (lower.includes('mouthstretch')) {
+            interpolated = Math.min(interpolated * 0.35, 0.08);
+          } else if (lower.includes('mouthsmile')) {
+            interpolated = Math.min(interpolated * 0.45, 0.10);
+          }
         }
       }
 
@@ -795,13 +792,13 @@ export class LipSyncAnimator {
       }
 
       // Hard anti-collapse guard for RPM: mouth closure/press can never exceed jaw-relative caps.
-      if (lower === 'mouthclose') {
+      if (!isEmotionChannel && lower === 'mouthclose') {
         // Relax closure cap so silence can seal while speech keeps anti-collapse safety.
         const closeCap = this.speakingFactor < 0.25
             ? Math.max(0.85, jawInterpolated * 0.9)
           : jawInterpolated * 0.65;
         interpolated = Math.min(interpolated, closeCap);
-      } else if (lower === 'mouthpressleft' || lower === 'mouthpressright') {
+      } else if (!isEmotionChannel && (lower === 'mouthpressleft' || lower === 'mouthpressright')) {
         interpolated = Math.min(interpolated, Math.max(0.02, jawInterpolated * 0.25));
       }
 
