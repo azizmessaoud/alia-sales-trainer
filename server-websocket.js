@@ -58,7 +58,7 @@ import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import OpenAI from 'openai';
 import crypto from 'node:crypto';
-import { runSTT } from './app/lib/stt.server.js';
+import { runSTT } from './modules/ai-core/stt.server.js';
 
 // ─────────────────────────────────────────────────
 // Configuration
