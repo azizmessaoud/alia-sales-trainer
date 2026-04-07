@@ -22,6 +22,7 @@
  *   { type: 'lipsync_blendshapes',  payload: { blendshapes, lipsyncTime } }
  *   { type: 'tts_done',             payload: { durationMs } }
  *   { type: 'stt_result',           payload: { text, confidence, language } }
+ *   { type: 'emotion_summary',      payload: { summary } }
  *   { type: 'pipeline_complete',    payload: { totalTime, breakdown } }
  *   { type: 'error',                payload: { message } }
  */
@@ -65,6 +66,8 @@ import { runSTT } from './app/lib/stt.server.js';
 const PORT = Number(process.env.WS_PORT) || 3001;
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || '';
 const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+const EMOTION_SERVICE_URL = process.env.EMOTION_SERVICE_URL || 'http://localhost:5000';
+const EMOTION_POLL_INTERVAL_MS = Number(process.env.EMOTION_POLL_INTERVAL_MS) || 5000;
 
 const MODELS = {
   LLM: 'meta/llama-3.1-8b-instruct',
@@ -104,6 +107,32 @@ function logPipelineTiming({ sessionId, stage, durationMs, error = null, meta = 
     ...meta,
   };
   console.log(JSON.stringify(payload));
+}
+
+async function fetchEmotionSummary() {
+  const response = await fetch(`${EMOTION_SERVICE_URL}/api/summary`, {
+    signal: AbortSignal.timeout(2500),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Emotion service HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+async function broadcastEmotionSummary() {
+  if (clients.size === 0) return;
+
+  try {
+    const summary = await fetchEmotionSummary();
+    for (const ws of clients.keys()) {
+      send(ws, 'emotion_summary', { summary, source: 'emotion-service' });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[WS] Emotion summary unavailable: ${message}`);
+  }
 }
 
 // ─────────────────────────────────────────────────
@@ -455,7 +484,7 @@ async function runLLM(conversationMessages) {
   }
 
   // Ollama fallback (phi3 or any locally available model)
-  const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+  const OLLAMA_URL = process.env.OLLAMA_BASE_URL || process.env.OLLAMA_URL || 'http://localhost:11434';
   const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'phi3:latest';
   const ollamaController = new AbortController();
   const ollamaTimeout = setTimeout(() => ollamaController.abort(), 10000);
@@ -508,10 +537,15 @@ httpServer.listen(PORT, () => {
   console.log(`\n🚀 ALIA Full-Duplex WebSocket Server`);
   console.log(`   ws://localhost:${PORT}`);
   console.log(`   NVIDIA NIM: ${nvidia ? '✅ Connected' : '⚠️  Mock mode'}`);
+  console.log(`   Emotion service: ${EMOTION_SERVICE_URL}`);
   console.log(
     `   Pipeline: LLM → TTS → LipSync (progressive streaming)\n`
   );
 });
+
+setInterval(() => {
+  void broadcastEmotionSummary();
+}, EMOTION_POLL_INTERVAL_MS);
 
 httpServer.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {

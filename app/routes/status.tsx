@@ -42,7 +42,7 @@ export const loader: LoaderFunction = async () => {
   const wsPort = Number(process.env.WS_PORT ?? 3001);
   const wsRunning = await isPortOpen('127.0.0.1', wsPort);
 
-  const orchestrationPath = path.join(process.cwd(), 'app', 'lib', 'orchestration.server.ts');
+  const orchestrationPath = path.join(process.cwd(), 'modules', 'ai-core', 'orchestration.server.ts');
   let orchestrationSource = '';
   try {
     orchestrationSource = await fs.readFile(orchestrationPath, 'utf-8');
@@ -96,8 +96,8 @@ export const loader: LoaderFunction = async () => {
       component: 'LangGraph Orchestration',
       status: hasLangGraphStateMachine ? 'healthy' : 'warning',
       message: hasLangGraphStateMachine
-        ? 'State graph detected in app/lib/orchestration.server.ts'
-        : 'State graph markers not found in app/lib/orchestration.server.ts',
+        ? 'State graph detected in modules/ai-core/orchestration.server.ts'
+        : 'State graph markers not found in modules/ai-core/orchestration.server.ts',
       updatedAt: new Date(),
     },
   ];

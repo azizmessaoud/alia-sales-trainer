@@ -10,11 +10,11 @@ function escapeSsml(text) {
 }
 
 export async function synthesizeAzure(text, language = 'en-US', voiceName = 'en-US-JennyNeural') {
-  const key = process.env.AZURE_SPEECH_KEY;
-  const region = process.env.AZURE_SPEECH_REGION || 'swedencentral';
+  const key = process.env.AZURE_TTS_KEY || process.env.AZURE_SPEECH_KEY;
+  const region = process.env.AZURE_TTS_REGION || process.env.AZURE_SPEECH_REGION || 'swedencentral';
 
   if (!key) {
-    console.warn('[Azure TTS] Missing AZURE_SPEECH_KEY');
+    console.warn('[Azure TTS] Missing AZURE_TTS_KEY (or AZURE_SPEECH_KEY)');
     return { audioBuffer: null, wordBoundaries: [], voiceName: null };
   }
 

@@ -16,7 +16,7 @@ import {
   getRecommendedScenarios,
   getCurrentLevel,
   type LevelMetrics,
-} from '~/lib/competency-level.server';
+} from '~/session-scoring/competency-level.server';
 
 // =====================================================
 // TYPE DEFINITIONS

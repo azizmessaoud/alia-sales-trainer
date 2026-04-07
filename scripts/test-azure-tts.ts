@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { synthesizeAzure } from '../app/lib/tts-azure.server';
+import { synthesizeAzure } from '../modules/tts-lipsync/tts-azure.server';
 
 async function main() {
   const result = await synthesizeAzure(

@@ -10,9 +10,9 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useImperativeHandle, forwardRef } from 'react';
-import LipSyncAnimator from '~/lib/lip-sync-animator.client';
-import type { LipSyncDebugStats } from '~/lib/lip-sync-animator.client';
-import type { AnimationLogEntry } from '~/lib/lip-sync-animator.client';
+import LipSyncAnimator from '~/tts-lipsync/lip-sync-animator.client';
+import type { LipSyncDebugStats } from '~/tts-lipsync/lip-sync-animator.client';
+import type { AnimationLogEntry } from '~/tts-lipsync/lip-sync-animator.client';
 
 // =====================================================
 // Types

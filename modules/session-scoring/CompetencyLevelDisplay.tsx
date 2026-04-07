@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import type { CompetencyLevel } from '~/lib/competency-level.server';
+import type { CompetencyLevel } from '~/session-scoring/competency-level.server';
 
 export interface CompetencyLevelDisplayProps {
   repId: string;

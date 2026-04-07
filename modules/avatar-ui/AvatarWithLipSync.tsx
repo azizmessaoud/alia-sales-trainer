@@ -10,8 +10,8 @@
  */
 
 import { useRef, useEffect, useState } from 'react';
-import { Avatar, AvatarHandle } from '~/components/Avatar';
-import { generateLipSync, type Audio2FaceBlendshape } from '~/lib/nvidia-nim.server';
+import { Avatar, AvatarHandle } from '~/avatar-ui/Avatar';
+import { generateLipSync, type Audio2FaceBlendshape } from '~/ai-core/nvidia-nim.server';
 
 interface LipSyncIntegrationProps {
   audioBuffer?: Buffer;

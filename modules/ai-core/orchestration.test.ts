@@ -1,25 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { orchestrateConversation } from './orchestration.server';
-import { evaluateCompliance } from './compliance-gate.server.js';
-import { MemoryOS } from './memory-os.server';
-import { NvidiaNIM } from './nvidia-nim.server';
-import { runTTS } from './tts.server.js';
-import { RAGPipeline } from './rag-pipeline.server.js';
+import { orchestrateConversation } from '~/ai-core/orchestration.server.js';
+import { evaluateCompliance } from '~/ai-core/compliance-gate.server.js';
+import { MemoryOS } from '~/rag-memory/memory-os.server.js';
+import { NvidiaNIM } from '~/ai-core/nvidia-nim.server.js';
+import { runTTS } from '~/tts-lipsync/tts.server.js';
+import { RAGPipeline } from '~/rag-memory/rag-pipeline.server.js';
 
 // Mock dependencies
-vi.mock('./compliance-gate.server.js', () => ({
+vi.mock('~/ai-core/compliance-gate.server.js', () => ({
   evaluateCompliance: vi.fn(),
   buildComplianceInterruptionText: vi.fn((reason) => `Compliance Error: ${reason}`),
 }));
 
-vi.mock('./memory-os.server', () => ({
+vi.mock('~/rag-memory/memory-os.server.js', () => ({
   MemoryOS: {
     retrieveEpisodeMemories: vi.fn(),
     getRepProfile: vi.fn(),
   },
 }));
 
-vi.mock('./nvidia-nim.server', () => ({
+vi.mock('~/ai-core/nvidia-nim.server.js', () => ({
   NvidiaNIM: {
     generateResponse: vi.fn(),
     generateLipSync: vi.fn(),
@@ -30,11 +30,11 @@ vi.mock('./nvidia-nim.server', () => ({
   },
 }));
 
-vi.mock('./tts.server.js', () => ({
+vi.mock('~/tts-lipsync/tts.server.js', () => ({
   runTTS: vi.fn(),
 }));
 
-vi.mock('./rag-pipeline.server.js', () => ({
+vi.mock('~/rag-memory/rag-pipeline.server.js', () => ({
   RAGPipeline: {
     buildAugmentedPrompt: vi.fn(() => 'System: You are ALIA...'),
   },

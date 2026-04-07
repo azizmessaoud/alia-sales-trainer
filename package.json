@@ -21,8 +21,8 @@
     "server": "node server-nvidia-nim.js",
     "server:ws": "node server-websocket.js",
     "dev:all": "concurrently \"npm run server\" \"npm run server:ws\" \"npm run dev\"",
-    "ingest-vital-docs": "tsx scripts/ingest-vital-docs.ts",
-    "test-rag": "tsx scripts/test-rag.ts"
+    "ingest-vital-docs": "tsx modules/rag-memory/scripts/ingest-vital-docs.ts",
+    "test-rag": "tsx modules/rag-memory/scripts/test-rag.ts"
   },
   "dependencies": {
     "@huggingface/inference": "^4.13.15",

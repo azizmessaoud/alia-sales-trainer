@@ -6,8 +6,8 @@ import { transcribeAzure } from './stt-azure.server.js';
  * @param {string} language
  */
 export async function runSTT(audioBuffer, language = 'en-US') {
-  const key = process.env.AZURE_SPEECH_KEY;
-  const region = process.env.AZURE_SPEECH_REGION;
+  const key = process.env.AZURE_TTS_KEY || process.env.AZURE_SPEECH_KEY;
+  const region = process.env.AZURE_TTS_REGION || process.env.AZURE_SPEECH_REGION;
 
   if (key && region) {
     try {
@@ -25,7 +25,7 @@ export async function runSTT(audioBuffer, language = 'en-US') {
       console.error('❌ Azure STT failed:', message);
     }
   } else {
-    console.warn('[STT] Azure not configured: AZURE_SPEECH_KEY or AZURE_SPEECH_REGION missing');
+    console.warn('[STT] Azure not configured: AZURE_TTS_KEY/AZURE_TTS_REGION (or AZURE_SPEECH_KEY/AZURE_SPEECH_REGION) missing');
   }
 
   return {

@@ -4,7 +4,7 @@
  */
 
 import { json, type LoaderFunctionArgs } from '@remix-run/node';
-import { MemoryOS } from '~/lib/memory-os.server';
+import { MemoryOS } from '~/rag-memory/memory-os.server';
 
 export async function loader({ params }: LoaderFunctionArgs) {
   const { rep_id } = params;

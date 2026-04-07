@@ -6,8 +6,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from '@remix-run/react';
 import { MultimodalHUD } from '~/components/MultimodalHUD';
-import { getMultimodalProcessor, type MultimodalMetrics } from '~/lib/multimodal-processor.client';
-import { CompetencyLevelDisplay, LevelBadge, ProgressBar } from '~/components/CompetencyLevelDisplay';
+import { getMultimodalProcessor, type MultimodalMetrics } from '~/session-scoring/multimodal-processor.client';
+import { CompetencyLevelDisplay, LevelBadge, ProgressBar } from '~/session-scoring/CompetencyLevelDisplay';
 
 export default function TrainingSession() {
   const { id: sessionId } = useParams();

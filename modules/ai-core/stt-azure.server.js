@@ -18,11 +18,11 @@ function parseDetailedResultJson(result) {
  * @param {string} language BCP-47 tag (en-US, fr-FR, ar-SA, es-ES)
  */
 export async function transcribeAzure(audioBuffer, language = 'en-US') {
-  const key = process.env.AZURE_SPEECH_KEY;
-  const region = process.env.AZURE_SPEECH_REGION || 'swedencentral';
+  const key = process.env.AZURE_TTS_KEY || process.env.AZURE_SPEECH_KEY;
+  const region = process.env.AZURE_TTS_REGION || process.env.AZURE_SPEECH_REGION || 'swedencentral';
 
   if (!key) {
-    console.warn('[Azure STT] Missing AZURE_SPEECH_KEY');
+    console.warn('[Azure STT] Missing AZURE_TTS_KEY (or AZURE_SPEECH_KEY)');
     return {
       text: null,
       language: null,

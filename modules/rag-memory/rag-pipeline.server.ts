@@ -16,7 +16,7 @@ import {
   generateText,
   type EmbeddingResponse,
   type LLMResponse,
-} from './providers';
+} from '../ai-core/providers';
 
 // =====================================================
 // Types

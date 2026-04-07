@@ -6,10 +6,10 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import type { MetaFunction } from '@remix-run/node';
-import { Avatar } from '~/components/Avatar';
+import { Avatar } from '~/avatar-ui/Avatar';
 import { ChatInput } from '~/components/ChatInput';
-import { SessionHUD, type SessionMetrics } from '~/components/SessionHUD';
-import type { AvatarHandle } from '~/components/Avatar';
+import { SessionHUD, type SessionMetrics } from '~/session-scoring/SessionHUD';
+import type { AvatarHandle } from '~/avatar-ui/Avatar';
 import { useALIAWebSocket } from '~/hooks/useALIAWebSocket';
 import { useHydrated } from '~/hooks/useHydrated';
 import type { Blendshape } from '~/hooks/useALIAWebSocket';

@@ -103,8 +103,8 @@ function bcp47ToISO639(tag) {
 export async function runTTS(text, session = null, options = {}) {
   const language = session?.language || process.env.DEFAULT_LANGUAGE || 'en-US';
   const voiceName = getAzureVoice(language);
-  const azureSpeechKey = options.azureSpeechKey || process.env.AZURE_SPEECH_KEY || '';
-  const azureSpeechRegion = options.azureSpeechRegion || process.env.AZURE_SPEECH_REGION || '';
+  const azureSpeechKey = options.azureSpeechKey || process.env.AZURE_TTS_KEY || process.env.AZURE_SPEECH_KEY || '';
+  const azureSpeechRegion = options.azureSpeechRegion || process.env.AZURE_TTS_REGION || process.env.AZURE_SPEECH_REGION || '';
   const voices = getActiveVoice(session);
   const nvidiaApiKey = options.nvidiaApiKey || process.env.NVIDIA_API_KEY || '';
   const nvidiaBaseUrl = options.nvidiaBaseUrl || 'https://integrate.api.nvidia.com/v1';
@@ -128,7 +128,7 @@ export async function runTTS(text, session = null, options = {}) {
       console.error('❌ Azure TTS failed:', e instanceof Error ? e.message : String(e));
     }
   } else {
-    console.warn('[TTS] Azure not configured: AZURE_SPEECH_KEY or AZURE_SPEECH_REGION missing');
+    console.warn('[TTS] Azure not configured: AZURE_TTS_KEY/AZURE_TTS_REGION (or AZURE_SPEECH_KEY/AZURE_SPEECH_REGION) missing');
   }
 
   // FALLBACK: NVIDIA FastPitch

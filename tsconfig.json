@@ -13,8 +13,10 @@
     "allowJs": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "ignoreDeprecations": "5.0",
     "paths": {
-      "~/*": ["./app/*"]  // Préfixe ./ ajouté
+      "~/*": ["./app/*", "./modules/*"]
     },
     "noEmit": true
   },

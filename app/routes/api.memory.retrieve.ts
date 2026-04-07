@@ -4,7 +4,7 @@
  */
 
 import { json, type ActionFunctionArgs } from '@remix-run/node';
-import { MemoryOS } from '~/lib/memory-os.server';
+import { MemoryOS } from '~/rag-memory/memory-os.server';
 
 export async function action({ request }: ActionFunctionArgs) {
   if (request.method !== 'POST') {

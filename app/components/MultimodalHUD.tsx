@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useState, useRef } from 'react';
-import type { MultimodalMetrics } from '~/lib/multimodal-processor.client';
+import type { MultimodalMetrics } from '~/session-scoring/multimodal-processor.client';
 
 interface MultimodalHUDProps {
   metrics: Partial<MultimodalMetrics> | null;
