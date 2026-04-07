@@ -67,7 +67,15 @@ const PORT = Number(process.env.WS_PORT) || 3001;
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || '';
 const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
 const EMOTION_SERVICE_URL = process.env.EMOTION_SERVICE_URL || 'http://localhost:5000';
-const EMOTION_POLL_INTERVAL_MS = Number(process.env.EMOTION_POLL_INTERVAL_MS) || 5000;
+
+function parseNonNegativeInt(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return Math.floor(parsed);
+}
+
+const EMOTION_POLL_INTERVAL_MS = parseNonNegativeInt(process.env.EMOTION_POLL_INTERVAL_MS, 5000);
 
 const MODELS = {
   LLM: 'meta/llama-3.1-8b-instruct',
@@ -158,7 +166,10 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     const state = clients.get(ws);
     if (state?.abortController) state.abortController.abort();
-    if (state?.session_id) sessions.delete(state.session_id);
+    if (state?.session_id) {
+      const session = sessions.get(state.session_id);
+      if (session?.ws === ws) session.ws = null;
+    }
     clients.delete(ws);
     console.log('[WS] Client disconnected');
   });
@@ -199,20 +210,45 @@ async function handleMessage(ws, msg) {
 // Session lifecycle
 // ─────────────────────────────────────────────────
 function handleStartSession(ws, { rep_id, session_id, voice_id, tts_voice, language }) {
-  if (!session_id) session_id = crypto.randomUUID();
   const normalizedRepId = isValidUuid(rep_id) ? rep_id : null;
+  const clientState = clients.get(ws);
+
+  if (session_id) {
+    const existingSession = sessions.get(session_id);
+    if (existingSession) {
+      existingSession.ws = ws;
+      if (normalizedRepId && !existingSession.rep_id) {
+        existingSession.rep_id = normalizedRepId;
+      }
+      if (voice_id) existingSession.voice_id = voice_id;
+      if (tts_voice) existingSession.tts_voice = tts_voice;
+      if (language) existingSession.language = language;
+      if (clientState) clientState.session_id = session_id;
+
+      console.log(`[WS] Session re-attaching: ${session_id}`);
+      send(ws, 'session_started', {
+        session_id,
+        rep_id: existingSession.rep_id,
+        started_at: existingSession.started_at,
+        reattached: true,
+      });
+      return;
+    }
+  }
+
+  if (!session_id) session_id = crypto.randomUUID();
   const session = {
     rep_id: normalizedRepId,
     session_id,
     started_at: Date.now(),
     messages: [],
     metrics: { accuracy: 0, compliance: 0, confidence: 0, clarity: 0 },
+    ws,
     voice_id:  voice_id  || null,  // ElevenLabs per-rep voice override
     tts_voice: tts_voice || null,  // NVIDIA per-rep voice override
     language:  language  || 'en-US', // BCP-47 tag, e.g. 'ar-SA', 'fr-FR', 'es-ES'
   };
   sessions.set(session_id, session);
-  const clientState = clients.get(ws);
   if (clientState) clientState.session_id = session_id;
 
   console.log(`[WS] Session started: ${session_id}`);
@@ -538,14 +574,19 @@ httpServer.listen(PORT, () => {
   console.log(`   ws://localhost:${PORT}`);
   console.log(`   NVIDIA NIM: ${nvidia ? '✅ Connected' : '⚠️  Mock mode'}`);
   console.log(`   Emotion service: ${EMOTION_SERVICE_URL}`);
+  console.log(`   Emotion polling: ${EMOTION_POLL_INTERVAL_MS > 0 ? `${EMOTION_POLL_INTERVAL_MS}ms` : 'disabled'}`);
   console.log(
     `   Pipeline: LLM → TTS → LipSync (progressive streaming)\n`
   );
 });
 
-setInterval(() => {
-  void broadcastEmotionSummary();
-}, EMOTION_POLL_INTERVAL_MS);
+if (EMOTION_POLL_INTERVAL_MS > 0) {
+  setInterval(() => {
+    void broadcastEmotionSummary();
+  }, EMOTION_POLL_INTERVAL_MS);
+} else {
+  console.log('[WS] Emotion polling disabled (EMOTION_POLL_INTERVAL_MS <= 0)');
+}
 
 httpServer.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
