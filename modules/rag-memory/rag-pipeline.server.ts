@@ -78,6 +78,16 @@ const defaultConfig: RAGConfig = {
   maxTokens: 1024,
 };
 
+const EXPECTED_EMBED_DIM = 768;
+
+function assertEmbeddingDim(embedding: number[], context: string): void {
+  if (!Array.isArray(embedding) || embedding.length !== EXPECTED_EMBED_DIM) {
+    throw new Error(
+      `[${context}] Expected ${EXPECTED_EMBED_DIM}-dim embedding, got ${embedding?.length ?? 'invalid'}`
+    );
+  }
+}
+
 // =====================================================
 // Memory Retrieval
 // =====================================================
@@ -94,6 +104,7 @@ export async function retrieveMemories(
   
   // Generate query embedding
   const { embedding }: EmbeddingResponse = await generateEmbedding(query, { prefixType: 'query' });
+  assertEmbeddingDim(embedding, 'rag-pipeline.retrieveMemories');
   
   // Search in pgvector
   const { data, error } = await supabase.rpc('search_episode_memories', {
@@ -120,6 +131,7 @@ export async function retrieveConsolidatedMemories(
   limit = 3
 ): Promise<any[]> {
   const { embedding } = await generateEmbedding(query, { prefixType: 'query' });
+  assertEmbeddingDim(embedding, 'rag-pipeline.retrieveConsolidatedMemories');
   
   const { data, error } = await supabase.rpc('search_consolidated_memories', {
     p_rep_id: rep_id,
@@ -295,6 +307,7 @@ export async function storeEpisodeMemory(params: {
   try {
     // Generate embedding
     const { embedding } = await generateEmbedding(params.episode_text, { prefixType: 'passage' });
+    assertEmbeddingDim(embedding, 'rag-pipeline.storeEpisodeMemory');
     
     // Extract learning summary with LLM
     const summaryPrompt = `Analyze this medical sales training session and provide JSON:

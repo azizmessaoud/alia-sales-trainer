@@ -79,19 +79,29 @@ export interface MemorySearchResult {
   learning_summary: any;
 }
 
+const EXPECTED_EMBED_DIM = 768;
+
+function assertEmbeddingDim(embedding: number[], context: string): void {
+  if (!Array.isArray(embedding) || embedding.length !== EXPECTED_EMBED_DIM) {
+    throw new Error(
+      `[${context}] Expected ${EXPECTED_EMBED_DIM}-dim embedding, got ${embedding?.length ?? 'invalid'}`
+    );
+  }
+}
+
 // =====================================================
 // Embedding Generation
 // =====================================================
 
 /**
- * Generate 384-dimensional embedding using HuggingFace (intfloat/multilingual-e5-small)
- * via providers abstraction layer. Supports EN/FR/AR/ES natively.
+ * Generate 768-dimensional embedding and fail fast on mismatch.
  */
 export async function generateEmbedding(
   text: string,
   options: { prefixType?: 'query' | 'passage' | 'none' } = {}
 ): Promise<number[]> {
   const result = await providersGenerateEmbedding(text, options);
+  assertEmbeddingDim(result.embedding, 'memory-os.generateEmbedding');
   return result.embedding;
 }
 
