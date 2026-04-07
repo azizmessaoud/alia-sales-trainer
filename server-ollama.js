@@ -43,25 +43,84 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_MODEL = process.env.GROQ_MODEL || 'mixtral-8x7b-32768';
 
 // Ollama (Local inference - offline capability)
-const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
+const OLLAMA_HOST = process.env.OLLAMA_BASE_URL || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
 const OLLAMA_CHAT_MODEL = 'phi3';
 
 // Embeddings (Always local via Ollama - zero cost)
 const EMBED_MODEL = 'nomic-embed-text';  // 768-dim, fast, free
+const EXPECTED_EMBED_DIM = 768;
 
 // Load environment variables
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+function isLikelyAnonKey(value) {
+  if (!value) return false;
+  const lower = value.toLowerCase();
+  return value.startsWith('sb_publishable_') || lower.includes('anon');
+}
+
 if (!supabaseUrl || !supabaseServiceKey) {
-  console.error('\n❌ Missing Supabase credentials.');
-  console.error('   Create a .env file with:');
-  console.error('   SUPABASE_URL=your-project-url');
-  console.error('   SUPABASE_SERVICE_ROLE_KEY=your-service-key\n');
+  console.error('\n❌ Missing required Supabase credentials.');
+  console.error('   Required keys in .env:');
+  console.error('   SUPABASE_URL=https://YOUR_PROJECT.supabase.co');
+  console.error('   SUPABASE_SERVICE_ROLE_KEY=sb_secret_...\n');
+  process.exit(1);
+}
+
+if (isLikelyAnonKey(supabaseServiceKey)) {
+  console.error('\n❌ SUPABASE_SERVICE_ROLE_KEY appears to be an anon/publishable key.');
+  console.error('   Use the service_role key (sb_secret_...) from Supabase Project Settings.\n');
   process.exit(1);
 }
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+function serializeError(error) {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      stack: error.stack,
+      code: error.code,
+      details: error.details,
+      hint: error.hint,
+    };
+  }
+
+  if (error && typeof error === 'object') {
+    return {
+      message: error.message || 'Unknown error object',
+      code: error.code,
+      details: error.details,
+      hint: error.hint,
+      raw: error,
+    };
+  }
+
+  return { message: String(error) };
+}
+
+function logError(context, error, metadata = {}) {
+  const payload = {
+    context,
+    ...metadata,
+    error: serializeError(error),
+    timestamp: new Date().toISOString(),
+  };
+  console.error('❌', JSON.stringify(payload, null, 2));
+}
+
+function assertEmbeddingDimension(embedding, context) {
+  if (!Array.isArray(embedding)) {
+    throw new Error(`[${context}] Embedding is not an array`);
+  }
+
+  if (embedding.length !== EXPECTED_EMBED_DIM) {
+    throw new Error(
+      `[${context}] Expected ${EXPECTED_EMBED_DIM}-dim embedding, got ${embedding.length}`
+    );
+  }
+}
 
 // Initialize clients
 let groq;
@@ -158,13 +217,14 @@ class OllamaClient {
       const embedding = data.embedding;
       const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
       const normalized = embedding.map(val => val / magnitude);
+      assertEmbeddingDimension(normalized, 'OllamaClient.embed');
       
       return {
         embedding: normalized,
         elapsed_ms: elapsed
       };
     } catch (error) {
-      console.error('🔴 Ollama embedding error:', error.message);
+      logError('ollama.embed', error, { model: this.embedModel });
       throw error;
     }
   }
@@ -248,6 +308,7 @@ async function storeEpisodeMemory(data) {
     // 1. Generate embedding
     const embedStart = Date.now();
     const { embedding } = await ollama.embed(data.episode_text);
+    assertEmbeddingDimension(embedding, 'storeEpisodeMemory');
     performance.embedding_ms = Date.now() - embedStart;
 
     // 2. Analyze episode with LLM
@@ -317,7 +378,10 @@ Provide analysis in this JSON format (only JSON, no markdown):
       performance
     };
   } catch (error) {
-    console.error('❌ Store memory error:', error);
+    logError('storeEpisodeMemory', error, {
+      rep_id: data?.rep_id,
+      session_id: data?.session_id,
+    });
     throw error;
   }
 }
@@ -328,6 +392,7 @@ async function retrieveEpisodeMemories(rep_id, query_text, limit = 5) {
   try {
     // Generate query embedding
     const { embedding } = await ollama.embed(query_text);
+    assertEmbeddingDimension(embedding, 'retrieveEpisodeMemories');
 
     // Semantic search using pgvector
     const { data, error } = await supabase.rpc('search_episode_memories', {
@@ -345,7 +410,7 @@ async function retrieveEpisodeMemories(rep_id, query_text, limit = 5) {
       elapsed_ms: Date.now() - startTime
     };
   } catch (error) {
-    console.error('❌ Retrieve memories error:', error);
+    logError('retrieveEpisodeMemories', error, { rep_id, query_text, limit });
     throw error;
   }
 }
@@ -365,8 +430,31 @@ async function getRepProfile(rep_id) {
       profile: data || null
     };
   } catch (error) {
-    console.error('❌ Get profile error:', error);
+    logError('getRepProfile', error, { rep_id });
     throw error;
+  }
+}
+
+async function runStartupValidation() {
+  const { error: probeError } = await supabase
+    .from('episode_memories')
+    .select('id')
+    .limit(1);
+
+  if (probeError) {
+    throw new Error(`Supabase probe failed: ${probeError.message}`);
+  }
+
+  const probeEmbedding = Array(EXPECTED_EMBED_DIM).fill(0);
+  const { error: rpcError } = await supabase.rpc('search_episode_memories', {
+    p_rep_id: '__startup_probe__',
+    p_query_embedding: probeEmbedding,
+    p_similarity_threshold: 0,
+    p_limit: 1,
+  });
+
+  if (rpcError) {
+    throw new Error(`search_episode_memories RPC missing or incompatible: ${rpcError.message}`);
   }
 }
 
@@ -391,19 +479,46 @@ async function handleRequest(req, res) {
   // Health check
   if (url.pathname === '/api/health') {
     const ollamaOk = await ollama.healthCheck();
-    const { error: supabaseError } = await supabase.from('reps').select('count').limit(1);
+    const { error: supabaseError } = await supabase.from('episode_memories').select('id').limit(1);
     
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'ok',
       llm_provider: LLM_PROVIDER,
-      groq: LLM_PROVIDER === 'groq' && groq ? '✅' : '➖',
-      ollama: ollamaOk ? '✅' : '❌',
-      supabase: !supabaseError ? '✅' : '❌',
+      groq: LLM_PROVIDER === 'groq' && groq ? 'configured' : 'not-configured',
+      ollama: ollamaOk ? 'ok' : 'error',
+      supabase: !supabaseError ? 'ok' : 'error',
       generation_model: LLM_PROVIDER === 'groq' && groq ? GROQ_MODEL : OLLAMA_CHAT_MODEL,
       embed_model: EMBED_MODEL,
+      expected_embedding_dimension: EXPECTED_EMBED_DIM,
       timestamp: new Date().toISOString()
     }));
+    return;
+  }
+
+  // Embedding-specific health check
+  if (url.pathname === '/api/health/embedding') {
+    try {
+      const { embedding } = await ollama.embed('health check embedding dimension');
+      assertEmbeddingDimension(embedding, 'health.embedding');
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        model: EMBED_MODEL,
+        dimension: embedding.length,
+        timestamp: new Date().toISOString(),
+      }));
+    } catch (error) {
+      logError('health.embedding', error);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        model: EMBED_MODEL,
+        expected_dimension: EXPECTED_EMBED_DIM,
+        error: serializeError(error).message,
+      }));
+    }
     return;
   }
 
@@ -419,8 +534,9 @@ async function handleRequest(req, res) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (error) {
+        logError('route:/api/memory/store', error, { body });
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error.message }));
+        res.end(JSON.stringify({ error: serializeError(error).message }));
       }
     });
     return;
@@ -438,8 +554,9 @@ async function handleRequest(req, res) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (error) {
+        logError('route:/api/memory/retrieve', error, { body });
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error.message }));
+        res.end(JSON.stringify({ error: serializeError(error).message }));
       }
     });
     return;
@@ -455,8 +572,9 @@ async function handleRequest(req, res) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (error) {
+      logError('route:/api/memory/profile/:rep_id', error, { rep_id });
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: error.message }));
+      res.end(JSON.stringify({ error: serializeError(error).message }));
     }
     return;
   }
@@ -472,14 +590,26 @@ async function handleRequest(req, res) {
 
 const server = http.createServer(handleRequest);
 
+let hasPrintedStartupBanner = false;
+
 server.listen(PORT, async () => {
-  console.log('\n🚀 ALIA 2.0 - Hybrid LLM Server');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`📍 Server: http://localhost:${PORT}`);
-  console.log(`💬 Generation: ${LLM_PROVIDER === 'groq' && groq ? `Groq (${GROQ_MODEL})` : `Ollama (${OLLAMA_CHAT_MODEL})`}`);
-  console.log(`🔢 Embeddings: ${EMBED_MODEL} (768-dim, local)`);
-  console.log(`🔒 Security: Embeddings never leave your machine`);
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  if (!hasPrintedStartupBanner) {
+    hasPrintedStartupBanner = true;
+    console.log('\n🚀 ALIA 2.0 - Hybrid LLM Server');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`📍 Server: http://localhost:${PORT}`);
+    console.log(`💬 Generation: ${LLM_PROVIDER === 'groq' && groq ? `Groq (${GROQ_MODEL})` : `Ollama (${OLLAMA_CHAT_MODEL})`}`);
+    console.log(`🔢 Embeddings: ${EMBED_MODEL} (${EXPECTED_EMBED_DIM}-dim, local)`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  }
+
+  try {
+    await runStartupValidation();
+    console.log('✅ Supabase startup validation passed');
+  } catch (error) {
+    logError('startup.validation', error);
+    process.exit(1);
+  }
 
   // Check connections
   const ollamaOk = await ollama.healthCheck();
@@ -499,6 +629,7 @@ server.listen(PORT, async () => {
 
   console.log('\n📡 Endpoints:');
   console.log('  GET  /api/health');
+  console.log('  GET  /api/health/embedding');
   console.log('  POST /api/memory/store');
   console.log('  POST /api/memory/retrieve');
   console.log('  GET  /api/memory/profile/:rep_id\n');
