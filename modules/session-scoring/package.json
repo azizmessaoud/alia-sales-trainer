@@ -1,0 +1,15 @@
+{
+  "name": "alia-session-scoring",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "tsx scripts/test-session-scoring.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
