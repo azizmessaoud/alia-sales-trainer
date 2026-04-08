@@ -11,7 +11,7 @@ import {
   supabase,
   generateEmbedding as providersGenerateEmbedding,
   generateText,
-} from '../ai-core/providers.js';
+} from '../../services/llm.service.js';
 
 // =====================================================
 // Types

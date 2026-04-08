@@ -6,33 +6,41 @@
  * Modules may import: const { generateText } = await import('../../services/llm.service.js');
  */
 
-import { generateText as generateTextImpl, generateEmbedding as generateEmbeddingImpl, checkHealth as checkHealthImpl, config } from '../modules/ai-core/providers.ts';
+import {
+  supabase,
+  generateText as generateTextImpl,
+  generateEmbedding as generateEmbeddingImpl,
+  checkHealth as checkHealthImpl,
+  config,
+} from '../modules/ai-core/providers.ts';
+
+export { supabase };
 
 /**
  * Generate LLM response with provider selection and fallback.
- * @param {Array<Object>} messages - Chat messages in OpenAI format
+ * Mirrors modules/ai-core/providers.ts signature and return shape.
+ * @param {string} prompt - Prompt text
  * @param {Object} options - Generation options
- * @param {number} options.temperature - Creativity (0–2, default: 0.7)
- * @param {number} options.max_tokens - Max output tokens (default: 1024)
- * @param {string} options.system_prompt - System message override
- * @returns {Promise<string>} - Generated text response
+ * @returns {Promise<{text: string, elapsed_ms: number, provider: 'nvidia'|'groq'|'ollama'}>}
  */
-export async function generateText(messages, options = {}) {
-  return generateTextImpl(messages, options);
+export async function generateText(prompt, options = {}) {
+  return generateTextImpl(prompt, options);
 }
 
 /**
  * Generate embedding for text (vector retrieval, semantic search).
+ * Mirrors modules/ai-core/providers.ts signature and return shape.
  * @param {string} text - Text to embed
- * @returns {Promise<Array<number>>} - Embedding vector (768-dim for nomic-embed-text)
+ * @param {Object} options - Embedding options
+ * @returns {Promise<{embedding: number[], elapsed_ms: number, provider: 'huggingface'|'nvidia'|'ollama'}>}
  */
-export async function generateEmbedding(text) {
-  const embedding = await generateEmbeddingImpl(text);
-  // Assert 768-dim as per ALIA spec
-  if (embedding.length !== 768) {
-    console.warn(`⚠️  Embedding dimension mismatch: expected 768, got ${embedding.length}`);
+export async function generateEmbedding(text, options = {}) {
+  const result = await generateEmbeddingImpl(text, options);
+  // Assert 768-dim as per ALIA spec (warn only; do not mutate behavior)
+  if (Array.isArray(result?.embedding) && result.embedding.length !== 768) {
+    console.warn(`⚠️  Embedding dimension mismatch: expected 768, got ${result.embedding.length}`);
   }
-  return embedding;
+  return result;
 }
 
 /**
@@ -48,7 +56,7 @@ export async function checkHealth() {
  * @returns {string} - 'nvidia' | 'groq' | 'openrouter' | 'unknown'
  */
 export function getActiveProvider() {
-  return config.provider || 'unknown';
+  return config.llm?.provider || 'unknown';
 }
 
 export default {

@@ -14,9 +14,19 @@ import {
   supabase,
   generateEmbedding,
   generateText,
-  type EmbeddingResponse,
-  type LLMResponse,
-} from '../ai-core/providers';
+} from '../../services/llm.service.js';
+
+type EmbeddingResponse = {
+  embedding: number[];
+  elapsed_ms: number;
+  provider: 'huggingface' | 'nvidia' | 'ollama';
+};
+
+type LLMResponse = {
+  text: string;
+  elapsed_ms: number;
+  provider: 'nvidia' | 'groq' | 'ollama';
+};
 
 // =====================================================
 // Types
