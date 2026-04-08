@@ -4,6 +4,12 @@
  * Run with: tsx scripts/test-tts-lipsync.ts
  */
 
+// Load root .env first (keys live there, not in module folder)
+import { config } from 'dotenv';
+import { resolve } from 'path';
+config({ path: resolve(process.cwd(), '../../.env') });
+config(); // module .env override if present
+
 import { strict as assert } from 'assert';
 
 type TestCase = {
@@ -35,21 +41,47 @@ TESTS.push({
 TESTS.push({
   name: 'Mock TTS produces valid output shape',
   run: async () => {
-    process.env.AZURE_TTS_KEY = 'test-key-disabled';
+    // Save real keys before overwriting
+    const saved = {
+      AZURE_TTS_KEY: process.env.AZURE_TTS_KEY,
+      AZURE_TTS_REGION: process.env.AZURE_TTS_REGION,
+      AZURE_SPEECH_KEY: process.env.AZURE_SPEECH_KEY,
+      AZURE_SPEECH_REGION: process.env.AZURE_SPEECH_REGION,
+      NVIDIA_API_KEY: process.env.NVIDIA_API_KEY,
+    };
+
+    // Force mock mode
+    process.env.AZURE_TTS_KEY = '';
     process.env.AZURE_TTS_REGION = '';
     process.env.AZURE_SPEECH_KEY = '';
     process.env.AZURE_SPEECH_REGION = '';
-    process.env.NVIDIA_API_KEY = 'test-key-disabled';
-    
+    process.env.NVIDIA_API_KEY = '';
+
     const { runTTS } = await import('../tts.server.js');
     const result = await runTTS('Hello world');
-    
+
     assert.ok(result.audioBase64, 'Should return audioBase64');
     assert.ok(typeof result.duration === 'number', 'Should return duration');
     assert.ok(Array.isArray(result.wordBoundaries), 'Should return wordBoundaries array');
     assert.ok(result.isMock === true, 'Should mark as mock when providers unavailable');
     assert.strictEqual(result.provider, 'mock', 'Provider should be "mock"');
-    
+
+    // Restore real keys for Test 3+
+    if (saved.AZURE_TTS_KEY === undefined) delete process.env.AZURE_TTS_KEY;
+    else process.env.AZURE_TTS_KEY = saved.AZURE_TTS_KEY;
+
+    if (saved.AZURE_TTS_REGION === undefined) delete process.env.AZURE_TTS_REGION;
+    else process.env.AZURE_TTS_REGION = saved.AZURE_TTS_REGION;
+
+    if (saved.AZURE_SPEECH_KEY === undefined) delete process.env.AZURE_SPEECH_KEY;
+    else process.env.AZURE_SPEECH_KEY = saved.AZURE_SPEECH_KEY;
+
+    if (saved.AZURE_SPEECH_REGION === undefined) delete process.env.AZURE_SPEECH_REGION;
+    else process.env.AZURE_SPEECH_REGION = saved.AZURE_SPEECH_REGION;
+
+    if (saved.NVIDIA_API_KEY === undefined) delete process.env.NVIDIA_API_KEY;
+    else process.env.NVIDIA_API_KEY = saved.NVIDIA_API_KEY;
+
     console.log('✓ TTS output shape valid for avatar integration');
   }
 });
@@ -64,11 +96,27 @@ TESTS.push({
     const result = await runTTS('The quick brown fox');
     
     assert.ok(Array.isArray(result.wordBoundaries), 'wordBoundaries should be an array');
-    
-    for (const { word, start, end } of result.wordBoundaries) {
-      assert.ok(typeof word === 'string', `Word should be string, got ${typeof word}`);
-      assert.ok(typeof start === 'number' && start >= 0, 'Start time should be non-negative number');
-      assert.ok(typeof end === 'number' && end > start, 'End time should be after start');
+
+    if (result.wordBoundaries.length > 0) {
+      for (const boundary of result.wordBoundaries) {
+        const { word } = boundary;
+        const start =
+          typeof boundary.start === 'number'
+            ? boundary.start
+            : (typeof boundary.audioOffset === 'number' ? boundary.audioOffset / 10000 : NaN);
+        const end =
+          typeof boundary.end === 'number'
+            ? boundary.end
+            : (
+              typeof boundary.audioOffset === 'number' && typeof boundary.duration === 'number'
+                ? (boundary.audioOffset + boundary.duration) / 10000
+                : NaN
+            );
+
+        assert.ok(typeof word === 'string', `Word should be string, got ${typeof word}`);
+        assert.ok(typeof start === 'number' && start >= 0, 'Start should be non-negative');
+        assert.ok(typeof end === 'number' && end > start, 'End should be after start');
+      }
     }
     
     console.log(`✓ Word boundary output valid (${result.wordBoundaries.length} boundaries)`);
