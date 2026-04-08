@@ -59,6 +59,7 @@ import { createServer } from 'http';
 import OpenAI from 'openai';
 import crypto from 'node:crypto';
 import { runSTT } from './modules/ai-core/stt.server.js';
+import { retrieveEpisodeMemories } from './modules/rag-memory/memory-os.server.ts';
 
 // ─────────────────────────────────────────────────
 // Configuration
@@ -343,6 +344,30 @@ async function handleChat(ws, { message }) {
   send(ws, 'message_received', { message_id: crypto.randomUUID() });
 
   try {
+    // Retrieve relevant contexts from RAG
+    const retrievalStart = Date.now();
+    let retrievedContexts = [];
+    if (session.rep_id) {
+      try {
+        retrievedContexts = await retrieveEpisodeMemories({
+          rep_id: session.rep_id,
+          query: message,
+          language: session.language || 'en-US',
+        });
+      } catch (e) {
+        console.warn('[RAG] Retrieval failed:', e instanceof Error ? e.message : String(e));
+      }
+    }
+    const retrievalTime = Date.now() - retrievalStart;
+
+    // Build RAG context block
+    let ragContext = '';
+    if (retrievedContexts.length > 0) {
+      ragContext = '[PRODUCT KNOWLEDGE]\n' +
+        retrievedContexts.map(c => c.memory_text || c.memory_id).join('\n') +
+        '\n[END PRODUCT KNOWLEDGE]';
+    }
+
     // Delegate orchestration to Remix backend via HTTP
     const rimaxBackendUrl = process.env.REMIX_BACKEND_URL || 'http://localhost:5173';
     const response = await fetch(`${rimaxBackendUrl}/api/chat`, {
@@ -353,6 +378,8 @@ async function handleChat(ws, { message }) {
         rep_id: session.rep_id ?? null,
         session_id,
         language: session.language || 'en-US',
+        ragContext,
+        retrievalTime,
       }),
     });
 

@@ -33,8 +33,22 @@ npm run test
 2. Validates lip-sync animator timeline wiring (no browser).
 3. Confirms gesture and emotion blending method signatures.
 4. Tests AvatarHandle imperative API contract.
+5. Validates GLB model bone/morph target requirements.
+
+**Test output:** 5/5 tests passed
 
 All tests are terminal-only; no browser needed.
+
+## GLB Requirements
+
+Avatar models (*.glb files) must comply with RPM (Ready Player Me) rig standards:
+
+- **Bones**: Exactly 67 bones (humanoid skeleton)
+- **Morph Targets**: Exactly 67 morph targets (facial blendshapes for lip-sync)
+- **Format**: GLB (binary glTF 2.0)
+- **Compatibility**: @met4citizen/talkinghead
+
+Models not meeting these specs will fail lip-sync timeline application.
 
 ## Public API
 

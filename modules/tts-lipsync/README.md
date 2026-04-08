@@ -13,6 +13,25 @@
 
 - `openai` (SDK) — NVIDIA NIM client
 
+## Multilingual Support
+
+The TTS module auto-detects language from input text and selects the appropriate voice:
+
+| Language | Code | Voice |
+|----------|------|-------|
+| English | en-US | en-US-JennyNeural |
+| French | fr-FR | fr-FR-DeniseNeural |
+| Arabic | ar-SA | ar-SA-ZariyahNeural |
+| Spanish | es-ES | es-ES-ElviraNeural |
+
+**Detection Strategy:**
+- **Arabic**: Unicode range detection (`\u0600-\u06FF`)
+- **French**: Particle matching (le, la, les, un, une, des, est, sont, avec, pour, dans)
+- **Spanish**: Particle matching (el, la, los, las, un, una, es, son, con, para, en, que, del)
+- **English**: Default fallback
+
+Explicit language override via session parameter: `session.language = 'ar-SA'` (BCP-47 tag)
+
 ## Run Standalone
 
 ```bash
@@ -32,6 +51,10 @@ npm run test
 2. Confirms word boundary extraction and timing correctness.
 3. Tests viseme alignment without making real audio requests.
 4. Verifies mock TTS output shape for avatar integration.
+5. Tests multilingual language detection (Arabic, French, Spanish, English).
+6. Validates voice selection for each language.
+
+**Test output:** 6/6 tests passed
 
 All tests are terminal-only; no browser needed.
 

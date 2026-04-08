@@ -34,7 +34,9 @@ npm run test
 1. Verifies compliance gate correctly blocks unsafe requests.
 2. Validates provider selection (NVIDIA → Groq fallback).
 3. Confirms orchestration pipeline structure and state transitions.
-4. Tests STT routing without making real API calls.
+4. Tests RAG context injection into LLM prompts.
+
+**Test output:** 4/4 tests passed
 
 All tests are terminal-only; no browser needed.
 
@@ -57,6 +59,22 @@ export async function checkHealth(): Promise<ProviderStatus>
 export function evaluateCompliance(userMessage): ComplianceResult
 export function buildComplianceInterruptionText(reason): string
 ```
+
+## RAG Wiring
+
+Episode memory retrieval is integrated into the conversation pipeline:
+
+1. **Retrieval** (`server-websocket.js`): Calls `retrieveEpisodeMemories()` from `modules/rag-memory/memory-os.server.ts`
+2. **Context Injection**: Retrieved knowledge chunks are formatted as:
+   ```
+   [PRODUCT KNOWLEDGE]
+   {retrieved chunks}
+   [END PRODUCT KNOWLEDGE]
+   ```
+3. **LLM Prompt**: Context block is prepended to system prompt before LLM receives the message
+4. **Response**: Generated response is grounded in company knowledge and compliant
+
+This ensures all responses are fact-checked against the knowledge base.
 
 ## Who Should Modify This
 

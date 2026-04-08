@@ -12,8 +12,46 @@ const AZURE_VOICE_MAP = {
   'es-ES': 'es-ES-ElviraNeural',
 };
 
+const VOICE_MAP = {
+  ar: { language: 'ar-SA', voice: 'ar-SA-ZariyahNeural' },
+  fr: { language: 'fr-FR', voice: 'fr-FR-DeniseNeural' },
+  es: { language: 'es-ES', voice: 'es-ES-ElviraNeural' },
+  en: { language: 'en-US', voice: 'en-US-JennyNeural' },
+};
+
 function getAzureVoice(language) {
   return AZURE_VOICE_MAP[language] ?? AZURE_VOICE_MAP['en-US'];
+}
+
+/**
+ * Detect language from text.
+ * Returns: 'ar' | 'fr' | 'es' | 'en'
+ */
+function detectLanguage(text) {
+  if (!text || typeof text !== 'string') return 'en';
+
+  // Arabic: Unicode range \u0600-\u06FF
+  if (/[\u0600-\u06FF]/.test(text)) {
+    return 'ar';
+  }
+
+  // French: characteristic particles
+  const frenchParticles = /\b(le|la|les|un|une|des|est|sont|avec|pour|dans|et|que|de|à)\b/gi;
+  const frenchCount = (text.match(frenchParticles) || []).length;
+
+  // Spanish: characteristic particles
+  const spanishParticles = /\b(el|la|los|las|un|una|es|son|con|para|en|que|del|de|a|y)\b/gi;
+  const spanishCount = (text.match(spanishParticles) || []).length;
+
+  // Heuristic: if both French and Spanish particles detected, use word count ratio
+  const wordCount = text.split(/\s+/).length;
+  const frenchRatio = frenchCount / wordCount;
+  const spanishRatio = spanishCount / wordCount;
+
+  if (frenchRatio > 0.15) return 'fr';
+  if (spanishRatio > 0.15) return 'es';
+
+  return 'en';
 }
 
 /**
@@ -99,9 +137,15 @@ function bcp47ToISO639(tag) {
 
 /**
  * Single-entry TTS chain: Azure -> NVIDIA -> mock.
+ * Auto-detects language from text if not provided in session.
  */
 export async function runTTS(text, session = null, options = {}) {
-  const language = session?.language || process.env.DEFAULT_LANGUAGE || 'en-US';
+  let language = session?.language;
+  if (!language) {
+    // Auto-detect language from text
+    const detectedCode = detectLanguage(text);
+    language = VOICE_MAP[detectedCode]?.language || 'en-US';
+  }
   const voiceName = getAzureVoice(language);
   const azureSpeechKey = options.azureSpeechKey || process.env.AZURE_TTS_KEY || process.env.AZURE_SPEECH_KEY || '';
   const azureSpeechRegion = options.azureSpeechRegion || process.env.AZURE_TTS_REGION || process.env.AZURE_SPEECH_REGION || '';

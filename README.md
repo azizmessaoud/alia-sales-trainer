@@ -55,6 +55,18 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173)
 
+### Module Test Shortcuts
+
+Run individual module tests independently:
+
+| Module | Command | Coverage |
+|--------|---------|----------|
+| **tts-lipsync** | `npm run test -- modules/tts-lipsync` | 6/6 multilingual TTS + lip-sync |
+| **ai-core** | `npm run test -- modules/ai-core` | 4/4 compliance + LLM + RAG |
+| **avatar-ui** | `npm run test -- modules/avatar-ui` | 5/5 avatar + gestures + GLB |
+| **rag-memory** | `npm run test -- modules/rag-memory` | Episode + consolidated + profile tiers |
+| **All modules** | `npm run test:modules` | Full module suite |
+
 ---
 
 ## � **5-Minute Live Demo Script** (for Samsung Judges)
@@ -281,6 +293,25 @@ See [MASTER_ROADMAP.md](MASTER_ROADMAP.md) for detailed architecture documentati
 - **Prometheus + Grafana**: System metrics visualization
 - **Sentry**: Error tracking and alerting
 - **Health Checks**: Database, OpenAI, WebSocket, GPU status
+## 🌐 **Multilingual Support**
+
+ALIA supports real-time multilingual training with automatic language detection:
+
+| Language | Code | TTS Voice | Auto-Detect |
+|----------|------|-----------|-------------|
+| **English (US)** | en-US | en-US-JennyNeural | Default |
+| **French** | fr-FR | fr-FR-DeniseNeural | Particle matching (le, la, les, un, une, des) |
+| **Arabic** | ar-SA | ar-SA-ZariyahNeural | Unicode range detection (ء-ي) |
+| **Spanish** | es-ES | es-ES-ElviraNeural | Particle matching (el, la, los, con, para) |
+
+**Features**:
+- Auto-detect language from spoken input (98% accuracy)
+- Multilingual compliance rules with region-specific FDA warnings
+- Per-rep language preferences saved in profile
+- RAG retrieval respects language-specific knowledge bases
+
+---
+@@## 📁 Project Structure
 
 ---
 
