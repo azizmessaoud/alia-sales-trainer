@@ -12,7 +12,7 @@ function getErrorMessage(e: unknown) { return e instanceof Error ? e.message : S
 TESTS.push({
   name: 'competency-level exports are present',
   run: async () => {
-    const mod = await import('../competency-level.server.ts');
+    const mod = await import('../competency-level.server');
     assert.ok(typeof mod === 'object' && Object.keys(mod).length > 0, 'competency-level should export functions');
     console.log('✓ competency-level API present');
   }
@@ -22,7 +22,7 @@ TESTS.push({
   name: 'CompetencyLevelDisplay component is importable',
   run: async () => {
     // Just verify the file is parseable (no DOM needed)
-    const mod = await import('../competency-level.server.ts');
+    const mod = await import('../competency-level.server');
     assert.ok(mod !== null, 'Module should be importable');
     console.log('✓ CompetencyLevelDisplay module accessible');
   }
@@ -31,7 +31,7 @@ TESTS.push({
 TESTS.push({
   name: 'scoring output shape is valid',
   run: async () => {
-    const mod = await import('../competency-level.server.ts');
+    const mod = await import('../competency-level.server');
     const scoreFn = (mod as Record<string, unknown>).scoreResponse
                  || (mod as Record<string, unknown>).computeScore
                  || (mod as Record<string, unknown>).evaluateCompetency;
