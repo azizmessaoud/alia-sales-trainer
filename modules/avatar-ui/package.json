@@ -1,0 +1,29 @@
+{
+  "name": "alia-avatar-ui",
+  "version": "1.0.0",
+  "description": "ALIA 3D avatar rendering, lip-sync animation controller, and gesture blending for TalkingHead",
+  "type": "module",
+  "exports": {
+    ".": "./Avatar.tsx"
+  },
+  "scripts": {
+    "test": "tsx scripts/test-avatar-ui.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@met4citizen/talkinghead": "^1.7.0",
+    "@types/three": "^0.183.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "three": "^0.183.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "@types/react": "^18.2.55",
+    "tsx": "^4.21.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

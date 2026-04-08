@@ -1,0 +1,32 @@
+{
+  "name": "alia-ai-core",
+  "version": "1.0.0",
+  "description": "ALIA LLM orchestration, compliance gating, RAG memory integration, and STT/embedding providers",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "test": "tsx scripts/test-ai-core.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@langchain/core": "^0.1.63",
+    "@langchain/langgraph": "^0.0.12",
+    "@langchain/openai": "^0.0.20",
+    "@supabase/supabase-js": "^2.39.7",
+    "@qdrant/js-client-rest": "^1.17.0",
+    "microsoft-cognitiveservices-speech-sdk": "^1.49.0",
+    "openai": "^4.28.0",
+    "groq-sdk": "^0.37.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "tsx": "^4.21.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
