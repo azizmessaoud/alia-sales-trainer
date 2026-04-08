@@ -613,18 +613,68 @@ export default function Index() {
         micStreamRef.current?.getTracks().forEach((track) => track.stop());
         micStreamRef.current = null;
 
-        if (!recordedChunks.length) {
-          return;
+        if (!recordedChunks.length) return;
+
+        try {
+          // 1. Decode WebM/Opus → AudioBuffer
+          const webmBlob = new Blob(recordedChunks, { type: 'audio/webm' });
+          const webmArrayBuffer = await webmBlob.arrayBuffer();
+          
+          const offlineCtx = new OfflineAudioContext(1, 1, 16000); // temp to decode
+          const decodeCtx = new AudioContext();
+          const decoded = await decodeCtx.decodeAudioData(webmArrayBuffer.slice(0));
+          decodeCtx.close();
+
+          // 2. Resample to 16kHz mono via OfflineAudioContext
+          const offlineCtx2 = new OfflineAudioContext(
+            1,                                          // mono
+            Math.ceil(decoded.duration * 16000),        // samples at 16kHz
+            16000                                       // target sample rate
+          );
+          const source = offlineCtx2.createBufferSource();
+          source.buffer = decoded;
+          source.connect(offlineCtx2.destination);
+          source.start(0);
+          const resampled = await offlineCtx2.startRendering();
+
+          // 3. Float32 → Int16 PCM
+          const pcmFloat = resampled.getChannelData(0);
+          const pcm16 = new Int16Array(pcmFloat.length);
+          for (let i = 0; i < pcmFloat.length; i++) {
+            pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(pcmFloat[i] * 32767)));
+          }
+
+          // 4. Build WAV header
+          const wavBuffer = new ArrayBuffer(44 + pcm16.byteLength);
+          const view = new DataView(wavBuffer);
+          const str = (off: number, s: string) =>
+            [...s].forEach((c, i) => view.setUint8(off + i, c.charCodeAt(0)));
+          str(0,  'RIFF'); view.setUint32(4,  36 + pcm16.byteLength, true);
+          str(8,  'WAVE'); str(12, 'fmt ');
+          view.setUint32(16, 16,    true);  // PCM chunk size
+          view.setUint16(20, 1,     true);  // PCM format
+          view.setUint16(22, 1,     true);  // mono
+          view.setUint32(24, 16000, true);  // sample rate
+          view.setUint32(28, 32000, true);  // byte rate (16000 * 2)
+          view.setUint16(32, 2,     true);  // block align
+          view.setUint16(34, 16,    true);  // bits per sample
+          str(40, 'data'); view.setUint32(40, pcm16.byteLength, true);
+          new Uint8Array(wavBuffer).set(new Uint8Array(pcm16.buffer), 44);
+
+          // 5. Send as base64 WAV
+          const audioBase64 = arrayBufferToBase64(wavBuffer);
+          console.log(`🎤 Sending PCM WAV to Azure STT: ${pcm16.length} samples @ 16kHz (${(decoded.duration).toFixed(1)}s)`);
+
+          setIsLoading(true);
+          setError(null);
+          requestStartRef.current = performance.now();
+          sendRaw('stt_audio', { audio: audioBase64, language: sessionLanguage });
+
+        } catch (err) {
+          console.error('❌ Audio resampling failed:', err);
+          setError('Audio processing failed. Please try again.');
+          setIsLoading(false);
         }
-
-        const blob = new Blob(recordedChunks, { type: 'audio/webm' });
-        const buffer = await blob.arrayBuffer();
-        const audioBase64 = arrayBufferToBase64(buffer);
-
-        setIsLoading(true);
-        setError(null);
-        requestStartRef.current = performance.now();
-        sendRaw('stt_audio', { audio: audioBase64, language: sessionLanguage });
       };
 
       recorder.onerror = () => {

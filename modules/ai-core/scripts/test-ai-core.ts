@@ -6,6 +6,15 @@
 
 import { strict as assert } from 'assert';
 
+type TestCase = {
+  name: string;
+  run: () => Promise<void>;
+};
+
+function getErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 // Load .env from parent directory if it exists
 if (process.env.NODE_ENV !== 'test') {
   try {
@@ -16,7 +25,7 @@ if (process.env.NODE_ENV !== 'test') {
   }
 }
 
-const TESTS = [];
+const TESTS: TestCase[] = [];
 
 /**
  * Test 1: Compliance gate blocks unsafe requests
@@ -27,12 +36,12 @@ TESTS.push({
     const { evaluateCompliance } = await import('../compliance-gate.server.js');
     
     // Should allow safe medical request
-    const safeResult = evaluateCompliance('What are the indications for Aspirin?');
-    assert.strictEqual(safeResult.allowed, true, 'Safe medical query should be allowed');
+    const safeResult = await evaluateCompliance('What are the indications for Aspirin?');
+    assert.strictEqual(safeResult.is_compliant, true, 'Safe medical query should be compliant');
     
     // Should block off-topic requests
-    const unsafeResult = evaluateCompliance('Tell me a joke about cats');
-    assert.strictEqual(unsafeResult.allowed, false, 'Off-topic query should be blocked');
+    const unsafeResult = await evaluateCompliance('Treat cancer instantly with this drug');
+    assert.strictEqual(unsafeResult.is_compliant, false, 'Hard-violation query should be blocked');
     
     console.log('✓ Compliance gate working correctly');
   }
@@ -44,10 +53,10 @@ TESTS.push({
 TESTS.push({
   name: 'Provider selection works',
   run: async () => {
-    const { config } = await import('../providers.ts');
+    const { config } = await import('../providers');
     
-    assert.ok(config.provider, 'Provider should be selected');
-    console.log(`✓ Active provider: ${config.provider}`);
+    assert.ok(config.llm.provider, 'LLM provider should be selected');
+    console.log(`✓ Active provider: ${config.llm.provider}`);
   }
 });
 
@@ -58,7 +67,7 @@ TESTS.push({
   name: 'STT module exports',
   run: async () => {
     const sttModule = await import('../stt.server.js');
-    assert.ok(sttModule.transcribeAudio, 'STT should export transcribeAudio');
+    assert.ok(sttModule.runSTT, 'STT should export runSTT');
     console.log('✓ STT module structure valid');
   }
 });
@@ -69,7 +78,7 @@ TESTS.push({
 TESTS.push({
   name: 'Orchestration exports',
   run: async () => {
-    const { orchestrateConversation, stateToResponse } = await import('../orchestration.server.ts');
+    const { orchestrateConversation, stateToResponse } = await import('../orchestration.server');
     assert.strictEqual(typeof orchestrateConversation, 'function', 'orchestrateConversation should be exported');
     assert.strictEqual(typeof stateToResponse, 'function', 'stateToResponse should be exported');
     console.log('✓ Orchestration pipeline API present');
@@ -89,8 +98,8 @@ async function runTests() {
     try {
       await test.run();
       passed++;
-    } catch (err) {
-      console.error(`✗ ${test.name}: ${err.message}`);
+    } catch (err: unknown) {
+      console.error(`✗ ${test.name}: ${getErrorMessage(err)}`);
       failed++;
     }
   }
@@ -99,7 +108,7 @@ async function runTests() {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-runTests().catch(err => {
-  console.error('Fatal error:', err);
+runTests().catch((err: unknown) => {
+  console.error('Fatal error:', getErrorMessage(err));
   process.exit(1);
 });
