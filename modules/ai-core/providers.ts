@@ -12,7 +12,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import Groq from 'groq-sdk';
 import { HfInference } from '@huggingface/inference';
 import http from 'node:http';
-import { NvidiaNIM } from './nvidia-nim.server';
+import { NvidiaNIM } from './nvidia-nim.server.ts';
 
 // =====================================================
 // Environment Configuration

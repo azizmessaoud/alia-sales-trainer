@@ -98,7 +98,7 @@ const LangAnnotationExport = (LangGraph as any).Annotation as AnnotationType | u
 const AnnotationShim: AnnotationType = ((<T>(_?: any) => undefined) as unknown) as AnnotationType;
 AnnotationShim.Root = (obj: Record<string, any>) => obj;
 const Annotation: AnnotationType = LangAnnotationExport ?? AnnotationShim;
-import { NvidiaNIM } from './nvidia-nim.server';
+import { NvidiaNIM } from './nvidia-nim.server.ts';
 import { evaluateCompliance, buildComplianceInterruptionText } from './compliance-gate.server';
 import { MemoryOS, type RepProfile } from '../rag-memory/memory-os.server';
 import { RAGPipeline } from '../rag-memory/rag-pipeline.server';
