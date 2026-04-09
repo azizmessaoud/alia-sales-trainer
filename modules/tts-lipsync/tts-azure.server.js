@@ -15,7 +15,7 @@ export async function synthesizeAzure(text, language = 'en-US', voiceName = 'en-
 
   if (!key) {
     console.warn('[Azure TTS] Missing AZURE_TTS_KEY (or AZURE_SPEECH_KEY)');
-    return { audioBuffer: null, wordBoundaries: [], voiceName: null };
+    return { audioBuffer: null, wordBoundaries: [], visemes: [], voiceName: null };
   }
 
   const ssml = `<speak version='1.0' xml:lang='${language}'><voice name='${voiceName}'>${escapeSsml(text)}</voice></speak>`;
@@ -27,12 +27,20 @@ export async function synthesizeAzure(text, language = 'en-US', voiceName = 'en-
 
   const synthesizer = new SpeechSDK.SpeechSynthesizer(speechConfig);
   const wordBoundaries = [];
+  const visemes = [];
 
   synthesizer.wordBoundary = (_sender, event) => {
     wordBoundaries.push({
       word: event?.text || '',
       audioOffset: Number(event?.audioOffset || 0),
       duration: Number(event?.duration || 0),
+    });
+  };
+
+  synthesizer.visemeReceived = (_sender, event) => {
+    visemes.push({
+      visemeId: Number(event?.visemeId || 0),
+      audioOffset: Number(event?.audioOffset || 0),
     });
   };
 
@@ -54,6 +62,7 @@ export async function synthesizeAzure(text, language = 'en-US', voiceName = 'en-
   return {
     audioBuffer: audioData,
     wordBoundaries,
+    visemes,
     voiceName,
   };
 }
