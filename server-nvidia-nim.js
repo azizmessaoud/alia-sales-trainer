@@ -22,7 +22,10 @@ if (fs.existsSync(envPath)) {
     if (trimmed && !trimmed.startsWith('#')) {
       const [key, ...valueParts] = trimmed.split('=');
       if (key) {
-        process.env[key.trim()] = valueParts.join('=').trim().replace(/^["']|["']$/g, '');
+        const normalizedKey = key.trim();
+        if (process.env[normalizedKey] === undefined) {
+          process.env[normalizedKey] = valueParts.join('=').trim().replace(/^["']|["']$/g, '');
+        }
       }
     }
   });

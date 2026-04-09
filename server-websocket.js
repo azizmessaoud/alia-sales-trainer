@@ -28,7 +28,7 @@
  */
 
 // ─────────────────────────────────────────────────
-// Load .env FIRST (before imports)
+// Load .env FIRST (before module imports that read env)
 // ─────────────────────────────────────────────────
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,22 +44,27 @@ if (fs.existsSync(envPath)) {
     if (trimmed && !trimmed.startsWith('#')) {
       const [key, ...valueParts] = trimmed.split('=');
       if (key) {
-        process.env[key.trim()] = valueParts
-          .join('=')
-          .trim()
-          .replace(/^["']|["']$/g, '');
+        const normalizedKey = key.trim();
+        if (process.env[normalizedKey] === undefined) {
+          process.env[normalizedKey] = valueParts
+            .join('=')
+            .trim()
+            .replace(/^["']|["']$/g, '');
+        }
       }
     }
   });
   console.log('✅ .env loaded');
 }
 
-import { WebSocketServer } from 'ws';
-import { createServer } from 'http';
-import OpenAI from 'openai';
-import crypto from 'node:crypto';
-import { runSTT } from './modules/ai-core/stt.server.js';
-import { retrieveEpisodeMemories } from './modules/rag-memory/memory-os.server.ts';
+const [{ WebSocketServer }, { createServer }, { default: OpenAI }, crypto, { runSTT }, { retrieveEpisodeMemories }] = await Promise.all([
+  import('ws'),
+  import('node:http'),
+  import('openai'),
+  import('node:crypto'),
+  import('./modules/ai-core/stt.server.js'),
+  import('./modules/rag-memory/memory-os.server.ts'),
+]);
 
 // ─────────────────────────────────────────────────
 // Configuration
