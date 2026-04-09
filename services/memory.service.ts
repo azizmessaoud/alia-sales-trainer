@@ -23,11 +23,11 @@
  */
 
 // Import for internal use
-import { MemoryOS as _MemoryOS } from '../modules/rag-memory/memory-os.server';
+import { MemoryOS as _MemoryOS } from '../modules/rag-memory/memory-os.server.ts';
 
 // Re-export all public memory functions and types
-export { MemoryOS, type RepProfile } from '../modules/rag-memory/memory-os.server';
-export { RAGPipeline } from '../modules/rag-memory/rag-pipeline.server';
+export { MemoryOS, type RepProfile } from '../modules/rag-memory/memory-os.server.ts';
+export { RAGPipeline } from '../modules/rag-memory/rag-pipeline.server.ts';
 
 // Convenience export for getRepProfile
 export async function getRepProfile(repId: string) {

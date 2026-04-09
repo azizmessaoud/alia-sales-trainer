@@ -100,12 +100,13 @@ AnnotationShim.Root = (obj: Record<string, any>) => obj;
 const Annotation: AnnotationType = LangAnnotationExport ?? AnnotationShim;
 import { NvidiaNIM } from './nvidia-nim.server.ts';
 import { evaluateCompliance, buildComplianceInterruptionText } from './compliance-gate.server';
-import { RAGPipeline, getRepProfile, type RepProfile } from '../../services/memory.service';
+import { getRepProfile, type RepProfile } from '../../services/memory.service';
+import { RAGPipeline } from '../rag-memory/rag-pipeline.server.ts';
 import { synthesizeSpeechWithVisemes, wordBoundariesToVisemes } from '../../services/tts.service';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 // Internal MemoryOS retrieval via service
-import { MemoryOS } from '../rag-memory/memory-os.server';
+import { MemoryOS } from '../rag-memory/memory-os.server.ts';
 
 type SupportedLanguage = 'en-US' | 'fr-FR' | 'ar-SA' | 'es-ES';
 type DetectedLanguage = 'en' | 'fr' | 'ar' | 'es';
