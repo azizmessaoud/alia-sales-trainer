@@ -465,11 +465,27 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
     const wordBoundaries = Array.isArray((ttsResult as any).wordBoundaries)
       ? (ttsResult as any).wordBoundaries
       : [];
+    const visemes = Array.isArray((ttsResult as any).visemes)
+      ? (ttsResult as any).visemes
+      : [];
     const blendshapes = wordBoundaries.length > 0
       ? wordBoundariesToVisemes(wordBoundaries, language)
       : [];
-    console.log(`[TTS] wordBoundaries: ${wordBoundaries.length} -> blendshapes: ${blendshapes.length} frames`);
+    console.log(`[TTS] wordBoundaries: ${wordBoundaries.length} -> blendshapes: ${blendshapes.length} frames, visemes: ${visemes.length}`);
     const ttsDuration = Date.now() - start;
+
+    // Stream viseme events to client (for real-time avatar lip sync)
+    if (visemes.length > 0 && state.onUpdate) {
+      for (const viseme of visemes) {
+        state.onUpdate({
+          type: 'viseme',
+          payload: {
+            visemeId: viseme.visemeId,
+            audioOffset: viseme.audioOffset,
+          },
+        });
+      }
+    }
 
     if (state.onUpdate) {
       state.onUpdate({
