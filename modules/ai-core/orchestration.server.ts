@@ -102,7 +102,7 @@ import { NvidiaNIM } from './nvidia-nim.server.ts';
 import { evaluateCompliance, buildComplianceInterruptionText } from './compliance-gate.server';
 import { getRepProfile, type RepProfile } from '../../services/memory.service';
 import { RAGPipeline } from '../rag-memory/rag-pipeline.server.ts';
-import { wordBoundariesToVisemes } from '../../services/tts.service';
+import { wordBoundariesToVisemes } from '../tts-lipsync/lipsync.server.js';
 import { runTTS } from '../tts-lipsync/tts.server.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
