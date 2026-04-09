@@ -236,6 +236,36 @@ const ARKIT_TO_RPM_VISEME: Record<string, Array<{ target: string; weight: number
   ],
 };
 
+/**
+ * Azure TTS Viseme IDs (0–21) → NVIDIA Audio2Face ARKit blendshape frames
+ * Maps Azure's 21-category phoneme system to the 52-channel ARKit space
+ * Reference: https://learn.microsoft.com/en-us/azure/ai-services/speech-service/how-to-speech-synthesis-viseme
+ */
+const AZURE_VISEME_TO_ARKIT: Record<number, Partial<Record<string, number>>> = {
+  0:  { jawOpen: 0.0 },                                          // silence
+  1:  { mouthPressLeft: 0.6, mouthPressRight: 0.6, jawOpen: 0.05 }, // p, b, m
+  2:  { mouthFrownLeft: 0.4, mouthFrownRight: 0.4, jawOpen: 0.1 },  // f, v
+  3:  { tongueOut: 0.3, mouthOpen: 0.2, jawOpen: 0.15 },            // th
+  4:  { jawOpen: 0.15, tongueOut: 0.2 },                            // t, d
+  5:  { jawOpen: 0.2, mouthFunnel: 0.1 },                           // k, g
+  6:  { mouthFunnel: 0.5, jawOpen: 0.1 },                           // ch, sh
+  7:  { cheekSquintLeft: 0.2, cheekSquintRight: 0.2, jawOpen: 0.08 }, // s, z
+  8:  { jawOpen: 0.1, mouthSmileLeft: 0.1, mouthSmileRight: 0.1 },    // n, l
+  9:  { mouthLeft: 0.15, mouthRight: 0.1, jawOpen: 0.12 },            // r
+  10: { jawOpen: 0.55, mouthSmileLeft: 0.2, mouthSmileRight: 0.2 },   // aa (father)
+  11: { jawOpen: 0.3, mouthSmileLeft: 0.2, mouthSmileRight: 0.2 },    // e (bed)
+  12: { jawOpen: 0.2, mouthSmileLeft: 0.4, mouthSmileRight: 0.4 },    // i (see)
+  13: { jawOpen: 0.4, mouthFunnel: 0.3 },                             // o (go)
+  14: { mouthPucker: 0.6, jawOpen: 0.1 },                             // u (blue)
+  15: { jawOpen: 0.45, mouthFunnel: 0.2 },                            // ao diphthong
+  16: { jawOpen: 0.25, mouthSmileLeft: 0.3, mouthSmileRight: 0.3 },   // ei diphthong
+  17: { jawOpen: 0.35, mouthSmileLeft: 0.2, mouthSmileRight: 0.2 },   // ia diphthong
+  18: { jawOpen: 0.35, mouthFunnel: 0.25, mouthPucker: 0.1 },         // ou diphthong
+  19: { jawOpen: 0.5, mouthSmileLeft: 0.25, mouthSmileRight: 0.25 },  // ai diphthong
+  20: { jawOpen: 0.35, mouthFunnel: 0.25, mouthSmileLeft: 0.1 },      // oi diphthong
+  21: { jawOpen: 0.3, mouthPucker: 0.4, mouthSmileLeft: 0.1 },        // ua diphthong
+};
+
 export class LipSyncAnimator {
   private mesh: THREE.Mesh;
   private morphTargetDictionary: Record<string, number>;
@@ -486,6 +516,46 @@ export class LipSyncAnimator {
     console.log(`📊 Loaded ${this.blendshapeData.length} frames for RPM avatar`);
   }
 
+  /**
+   * Append frames from streaming TTS (sentence-by-sentence)
+   * Normalizes timestamps relative to the first accumulated frame
+   * Auto-starts playback if idle
+   * @param newFrames — Audio2FaceBlendshape[] from TTS chunk
+   */
+  appendBlendshapeFrames(newFrames: Audio2FaceBlendshape[]): void {
+    if (newFrames.length === 0) return;
+
+    const SENTENCE_GAP_MS = 80; // coarticulation buffer between sentences
+
+    // First append ever: normalize all timestamps to 0
+    if (this.blendshapeData.length === 0) {
+      const offset = newFrames[0].timestamp ?? 0;
+      const normalized = newFrames.map((f) => ({
+        ...f,
+        timestamp: f.timestamp - offset,
+      }));
+      this.blendshapeData = normalized;
+      console.log(`📊 Initialized streaming: ${normalized.length} frames (first chunk)`);
+    } else {
+      // Subsequent appends: offset new frames relative to where buffer ends + gap
+      const bufferEndMs = (this.blendshapeData[this.blendshapeData.length - 1]?.timestamp ?? 0) + SENTENCE_GAP_MS;
+      const newOffset = newFrames[0].timestamp ?? 0;
+
+      const normalized = newFrames.map((f) => ({
+        ...f,
+        timestamp: f.timestamp - newOffset + bufferEndMs,
+      }));
+
+      this.blendshapeData.push(...normalized);
+      console.log(`➕ Appended: ${normalized.length} frames (total: ${this.blendshapeData.length})`);
+    }
+
+    // Auto-start if not already playing and we have content
+    if (!this.isPlaying && this.blendshapeData.length > 0) {
+      this.play();
+    }
+  }
+
   play(audioCurrentTime: number = 0): void {
     if (this.isPlaying) this.stop();
 
@@ -539,6 +609,37 @@ export class LipSyncAnimator {
 
   setMode(mode: AvatarMode): void {
     this.modeRef = mode;
+  }
+
+  /**
+   * Apply a single Azure TTS viseme (called as visemes stream in from the WebSocket)
+   * @param visemeId — Azure viseme ID 0–21
+   * @param audioOffsetTicks — Audio timestamp in 100-nanosecond units (from Azure)
+   */
+  applyAzureViseme(visemeId: number, audioOffsetTicks: number): void {
+    if (visemeId < 0 || visemeId > 21) {
+      console.warn(`⚠️  Invalid Azure viseme ID: ${visemeId}, ignoring`);
+      return;
+    }
+
+    // Convert 100ns ticks → milliseconds
+    const audioOffsetMs = audioOffsetTicks / 10000;
+
+    // Convert Azure viseme to ARKit blendshape frame
+    const arkit = AZURE_VISEME_TO_ARKIT[visemeId] ?? { jawOpen: 0 };
+
+    // Create a single-frame blendshape entry
+    const frame: Audio2FaceBlendshape = {
+      timestamp: audioOffsetMs,
+      blendshapes: { ...arkit },
+    };
+
+    // Append to the animated frames
+    this.appendBlendshapeFrames([frame]);
+
+    if (import.meta.env.DEV) {
+      console.log(`🟢 Azure viseme ${visemeId} → ${Object.keys(arkit).join(', ')} @ ${audioOffsetMs.toFixed(0)}ms`);
+    }
   }
 
   private startIdleGestures(): void {
