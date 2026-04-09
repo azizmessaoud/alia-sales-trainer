@@ -130,7 +130,7 @@ function isValidUuid(value: string | null | undefined): value is string {
  * Update Event for progressive streaming
  */
 export interface PipelineUpdate {
-  type: 'stage' | 'llm_text' | 'tts_chunk' | 'tts_audio' | 'lipsync_blendshapes' | 'compliance_violation' | 'error';
+  type: 'stage' | 'llm_text' | 'tts_chunk' | 'tts_audio' | 'lipsync_blendshapes' | 'viseme' | 'compliance_violation' | 'error';
   payload: any;
 }
 

@@ -61,6 +61,8 @@ export interface UseALIAWebSocketOptions {
   onStageChange?: (stage: string) => void;
   /** Fired when server-side STT returns transcript */
   onSTTResult?: (result: STTResult) => void;
+  /** Fired when Azure viseme event arrives (for real-time lip-sync) */
+  onViseme?: (visemeId: number, audioOffsetTicks: number) => void;
   /** Fired on errors from the server */
   onError?: (message: string) => void;
   /** Fired when session is started */
@@ -100,6 +102,7 @@ export function useALIAWebSocket(
     onPipelineComplete,
     onStageChange,
     onSTTResult,
+    onViseme,
     onError,
     onSessionStarted,
   } = options;
@@ -256,6 +259,12 @@ export function useALIAWebSocket(
 
       case 'tts_chunk':
         cbRef.current.onTTSChunk?.(payload?.chunkBase64 ?? null, payload?.isFirst ?? false, payload?.isFinal ?? false);
+        break;
+
+      case 'viseme':
+        if (typeof payload?.visemeId === 'number' && typeof payload?.audioOffset === 'number') {
+          cbRef.current.onViseme?.(payload.visemeId, payload.audioOffset);
+        }
         break;
 
       case 'lipsync_blendshapes':

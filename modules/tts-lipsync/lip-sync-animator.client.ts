@@ -631,7 +631,9 @@ export class LipSyncAnimator {
     // Create a single-frame blendshape entry
     const frame: Audio2FaceBlendshape = {
       timestamp: audioOffsetMs,
-      blendshapes: { ...arkit },
+      blendshapes: Object.fromEntries(
+        Object.entries(arkit).filter(([, v]) => v !== undefined)
+      ) as Record<string, number>,
     };
 
     // Append to the animated frames

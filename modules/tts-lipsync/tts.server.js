@@ -3,7 +3,33 @@
  * Provider order: Azure Speech -> NVIDIA FastPitch -> mock WAV.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { synthesizeAzure } from './tts-azure.server.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function loadEnvFileIfExists(filePath) {
+  if (!fs.existsSync(filePath)) return;
+
+  const envContent = fs.readFileSync(filePath, 'utf-8');
+  for (const line of envContent.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+
+    const [keyRaw, ...valueParts] = trimmed.split('=');
+    const key = keyRaw?.trim();
+    if (!key || process.env[key] !== undefined) continue;
+
+    process.env[key] = valueParts.join('=').trim().replace(/^['"]|['"]$/g, '');
+  }
+}
+
+// Load module-local .env first, then root .env for shared credentials.
+loadEnvFileIfExists(path.resolve(__dirname, '.env'));
+loadEnvFileIfExists(path.resolve(__dirname, '../../.env'));
 
 const AZURE_VOICE_MAP = {
   'en-US': 'en-US-JennyNeural',
@@ -147,12 +173,12 @@ export async function runTTS(text, session = null, options = {}) {
     language = VOICE_MAP[detectedCode]?.language || 'en-US';
   }
   const voiceName = getAzureVoice(language);
-  const azureSpeechKey = options.azureSpeechKey || process.env.AZURE_TTS_KEY || process.env.AZURE_SPEECH_KEY || '';
-  const azureSpeechRegion = options.azureSpeechRegion || process.env.AZURE_TTS_REGION || process.env.AZURE_SPEECH_REGION || '';
+  const azureSpeechKey = options.azureSpeechKey ?? process.env.AZURE_TTS_KEY ?? process.env.AZURE_SPEECH_KEY ?? '';
+  const azureSpeechRegion = options.azureSpeechRegion ?? process.env.AZURE_TTS_REGION ?? process.env.AZURE_SPEECH_REGION ?? '';
   const voices = getActiveVoice(session);
-  const nvidiaApiKey = options.nvidiaApiKey || process.env.NVIDIA_API_KEY || '';
-  const nvidiaBaseUrl = options.nvidiaBaseUrl || 'https://integrate.api.nvidia.com/v1';
-  const nvidiaModel = options.nvidiaModel || 'nvidia/fastpitch-hifigan';
+  const nvidiaApiKey = options.nvidiaApiKey ?? process.env.NVIDIA_API_KEY ?? '';
+  const nvidiaBaseUrl = options.nvidiaBaseUrl ?? 'https://integrate.api.nvidia.com/v1';
+  const nvidiaModel = options.nvidiaModel ?? 'nvidia/fastpitch-hifigan';
 
   // PRIMARY: Azure Speech
   if (azureSpeechKey && azureSpeechRegion) {
@@ -164,6 +190,7 @@ export async function runTTS(text, session = null, options = {}) {
           audioBase64: azResult.audioBuffer.toString('base64'),
           duration: parseWavDuration(azResult.audioBuffer),
           wordBoundaries: azResult.wordBoundaries ?? [],
+          visemes: azResult.visemes ?? [],
           isMock: false,
           provider: 'azure-speech',
         };
@@ -198,6 +225,7 @@ export async function runTTS(text, session = null, options = {}) {
           audioBase64: buf.toString('base64'),
           duration: parseWavDuration(buf),
           wordBoundaries: [],
+          visemes: [],
           isMock: false,
           provider: 'nvidia',
         };
@@ -215,6 +243,7 @@ export async function runTTS(text, session = null, options = {}) {
     audioBase64: wav.toString('base64'),
     duration,
     wordBoundaries: [],
+    visemes: [],
     isMock: true,
     provider: 'mock',
   };
