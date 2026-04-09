@@ -50,7 +50,7 @@ import type { ActionFunction } from '@remix-run/node';
 import {
   orchestrateConversation,
   stateToResponse,
-} from '~/ai-core/orchestration.server';
+} from '../../modules/ai-core/orchestration.server';
 
 // ── Validation ────────────────────────────────────────────────────────────────
 

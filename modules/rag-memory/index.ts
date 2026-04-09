@@ -3,19 +3,23 @@
  * Exports stable contract for memory storage and retrieval
  */
 
+import { MemoryOS } from './memory-os.server';
+import { RAGPipeline } from './rag-pipeline.server';
+
 export {
   MemoryOS,
   type RepProfile,
+  type EpisodeMemory,
+  type ConsolidatedMemory,
+  type MemorySearchResult,
+  generateEmbedding,
 } from './memory-os.server';
 
 export { RAGPipeline } from './rag-pipeline.server';
 
-// Re-export types for type safety
-export type { Episode, MemoryContext } from './memory-os.server';
-
 // Convenience functions
 export async function storeEpisode(episode: any) {
-  return MemoryOS.storeEpisode(episode);
+  return MemoryOS.storeEpisodeMemory(episode);
 }
 
 export async function retrieveContext(
@@ -23,17 +27,10 @@ export async function retrieveContext(
   repId: string,
   limit: number = 5
 ) {
-  return MemoryOS.retrieveEpisodeMemories({
-    rep_id: repId,
-    query,
-    limit,
-  });
+  return RAGPipeline.retrieveMemories(repId, query);
 }
 
 export async function getRepProfile(repId: string) {
   return MemoryOS.getRepProfile(repId);
 }
 
-export async function generateEmbedding(text: string) {
-  return RAGPipeline.generateEmbedding(text);
-}

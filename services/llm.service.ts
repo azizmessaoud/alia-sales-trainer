@@ -22,15 +22,41 @@
  *   - TypeScript strict: no `any`
  */
 
-// Re-export all public LLM provider functions and types
+// ── Direct re-exports from providers.ts ────────────────────────────────────────
 export {
-  generateResponse,
-  streamResponse,
-  getAvailableModels,
+  generateText,
+  generateEmbedding,
+  checkHealth,
+  supabase,
+  ollama,
+  config,
 } from '../modules/ai-core/providers';
 
-export type {
-  LLMProvider,
-  LLMResponse,
-  LLMStreamChunk,
-} from '../modules/ai-core/providers';
+export type { LLMResponse, EmbeddingResponse, HealthStatus } from '../modules/ai-core/providers';
+
+// ── Compatibility aliases & shims for phantom types ────────────────────────────
+
+// Alias: legacy callers expect generateResponse, but providers exports generateText
+export { generateText as generateResponse };
+
+// Type definitions for types that don't exist in providers.ts
+export type LLMProvider = 'nvidia' | 'groq' | 'ollama';
+export type LLMStreamChunk = { text: string; done: boolean };
+
+// Shim: streamResponse doesn't exist in providers, provide a basic implementation
+import { generateText } from '../modules/ai-core/providers';
+
+export async function streamResponse(
+  prompt: string,
+  onChunk: (chunk: LLMStreamChunk) => void,
+  options?: { temperature?: number; maxTokens?: number }
+): Promise<void> {
+  const result = await generateText(prompt, options);
+  onChunk({ text: result.text, done: false });
+  onChunk({ text: '', done: true });
+}
+
+// Shim: getAvailableModels doesn't exist in providers, provide a stub
+export async function getAvailableModels(): Promise<LLMProvider[]> {
+  return ['nvidia', 'groq', 'ollama'];
+}
