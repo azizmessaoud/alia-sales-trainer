@@ -102,7 +102,8 @@ import { NvidiaNIM } from './nvidia-nim.server.ts';
 import { evaluateCompliance, buildComplianceInterruptionText } from './compliance-gate.server';
 import { getRepProfile, type RepProfile } from '../../services/memory.service';
 import { RAGPipeline } from '../rag-memory/rag-pipeline.server.ts';
-import { synthesizeSpeechWithVisemes, wordBoundariesToVisemes } from '../../services/tts.service';
+import { wordBoundariesToVisemes } from '../../services/tts.service';
+import { runTTS } from '../tts-lipsync/tts.server.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 // Internal MemoryOS retrieval via service
@@ -463,7 +464,7 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
 
     const session = state.session;
     const language = (session?.language as SupportedLanguage) || state.language || 'en-US';
-    const ttsResult = await synthesizeSpeechWithVisemes(state.llmResponse, session?.voice || 'default', language);
+    const ttsResult = await runTTS(state.llmResponse, session as any);
     const wordBoundaries = Array.isArray((ttsResult as any).wordBoundaries)
       ? (ttsResult as any).wordBoundaries
       : [];
