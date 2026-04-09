@@ -38,19 +38,13 @@ import type { ActionFunction } from '@remix-run/node';
 /**
  * Import the two public functions from the AI-core orchestration layer.
  *
- * NOTE: Import path is ~/modules/ai-core/orchestration.server (not ~/ai-core).
- * The `~` alias resolves to the `app/` directory in this Remix project,
- * so the full resolution is: app/modules/ai-core/orchestration.server.ts
- *
- * If orchestration.server.ts moves to modules/ at repo root, update to:
- *   import { ... } from '../../modules/ai-core/orchestration.server';
- * or use the services facade:
- *   import { orchestrateConversation } from '../../services/llm.service';
+ * Using relative path because orchestration.server.ts is at repo root modules/,
+ * not under app/modules/. The `~` alias only resolves to app/, so we need ../..
  */
 import {
   orchestrateConversation,
   stateToResponse,
-} from '~/modules/ai-core/orchestration.server';
+} from '../../modules/ai-core/orchestration.server';
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
