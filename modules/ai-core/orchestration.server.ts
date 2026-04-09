@@ -100,11 +100,12 @@ AnnotationShim.Root = (obj: Record<string, any>) => obj;
 const Annotation: AnnotationType = LangAnnotationExport ?? AnnotationShim;
 import { NvidiaNIM } from './nvidia-nim.server.ts';
 import { evaluateCompliance, buildComplianceInterruptionText } from './compliance-gate.server';
-import { MemoryOS, type RepProfile } from '../rag-memory/memory-os.server';
-import { RAGPipeline } from '../rag-memory/rag-pipeline.server';
-import { runTTS } from '../tts-lipsync/tts.server';
-import { wordBoundariesToVisemes } from '../tts-lipsync/lipsync.server';
+import { RAGPipeline, getRepProfile, type RepProfile } from '../../services/memory.service';
+import { synthesizeSpeechWithVisemes, wordBoundariesToVisemes } from '../../services/tts.service';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+
+// Internal MemoryOS retrieval via service
+import { MemoryOS } from '../rag-memory/memory-os.server';
 
 type SupportedLanguage = 'en-US' | 'fr-FR' | 'ar-SA' | 'es-ES';
 type DetectedLanguage = 'en' | 'fr' | 'ar' | 'es';
@@ -461,7 +462,7 @@ const ttsNode = async (state: OrchestrationState): Promise<Partial<Orchestration
 
     const session = state.session;
     const language = (session?.language as SupportedLanguage) || state.language || 'en-US';
-    const ttsResult = await runTTS(state.llmResponse, session as any);
+    const ttsResult = await synthesizeSpeechWithVisemes(state.llmResponse, session?.voice || 'default', language);
     const wordBoundaries = Array.isArray((ttsResult as any).wordBoundaries)
       ? (ttsResult as any).wordBoundaries
       : [];

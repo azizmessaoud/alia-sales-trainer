@@ -8,32 +8,28 @@
  *   and rep profile management used by the ALIA orchestration pipeline.
  *
  * USAGE:
- *   import { storeEpisode, retrieveContext, getRepProfile } from '../../services/memory.service';
+ *   import { MemoryOS, RAGPipeline, getRepProfile } from '../../services/memory.service';
  *
  * CONTRACT (DO NOT CHANGE SIGNATURES):
- *   storeEpisode(episode: Episode) → Promise<void>
- *   retrieveContext(query: string, repId: string, topK?: number) → Promise<MemoryContext>
- *   getRepProfile(repId: string) → Promise<RepProfile>
- *   generateEmbedding(text: string) → Promise<number[]>
+ *   MemoryOS.retrieveEpisodeMemories() → Promise<Memory[]>
+ *   MemoryOS.getRepProfile(repId: string) → Promise<RepProfile>
+ *   RAGPipeline.buildAugmentedPrompt() → string
  *
  * CONSTRAINTS:
  *   - No business logic here — only re-exports
- *   - TypeScript strict: no `any`
  *
  * ENVIRONMENT VARS REQUIRED (validated in module):
  *   SUPABASE_URL, SUPABASE_ANON_KEY, OLLAMA_BASE_URL
  */
 
-// Re-export all public memory functions and types
-export {
-  storeEpisode,
-  retrieveContext,
-  getRepProfile,
-  generateEmbedding,
-} from '../modules/rag-memory/index';
+// Import for internal use
+import { MemoryOS as _MemoryOS } from '../modules/rag-memory/memory-os.server';
 
-export type {
-  Episode,
-  MemoryContext,
-  RepProfile,
-} from '../modules/rag-memory/index';
+// Re-export all public memory functions and types
+export { MemoryOS, type RepProfile } from '../modules/rag-memory/memory-os.server';
+export { RAGPipeline } from '../modules/rag-memory/rag-pipeline.server';
+
+// Convenience export for getRepProfile
+export async function getRepProfile(repId: string) {
+  return _MemoryOS.getRepProfile(repId);
+}

@@ -38,9 +38,9 @@ import type { ActionFunction } from '@remix-run/node';
 /**
  * Import the two public functions from the AI-core orchestration layer.
  *
- * NOTE: Import path is ~/modules/ai-core/orchestration.server (not ~/ai-core).
- * The `~` alias resolves to the `app/` directory in this Remix project,
- * so the full resolution is: app/modules/ai-core/orchestration.server.ts
+ * NOTE: Import path is ~/ai-core/orchestration.server (not ~/modules/ai-core).
+ * The `~` alias resolves to both `app/` and `modules/` directories,
+ * so this resolves to: modules/ai-core/orchestration.server.ts
  *
  * If orchestration.server.ts moves to modules/ at repo root, update to:
  *   import { ... } from '../../modules/ai-core/orchestration.server';
@@ -50,7 +50,7 @@ import type { ActionFunction } from '@remix-run/node';
 import {
   orchestrateConversation,
   stateToResponse,
-} from '~/modules/ai-core/orchestration.server';
+} from '~/ai-core/orchestration.server';
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
@@ -116,14 +116,14 @@ interface ChatResponse {
   /** Present on success */
   data?: {
     /** ALIA's text response (for chat UI display and subtitle rendering) */
-    text: string;
+    text: string | undefined;
 
     /**
      * Base64-encoded MP3 audio data from Azure TTS.
      * Frontend creates a Blob URL: URL.createObjectURL(new Blob([atob(audio)]))
      * and feeds it to the HTML <audio> element + LipSyncAnimator.setAudioElement().
      */
-    audio: string;
+    audio: string | undefined;
 
     /**
      * Audio2Face ARKit blendshape frame array.
@@ -138,7 +138,7 @@ interface ChatResponse {
     blendshapes: Array<{
       timestamp: number;
       blendshapes: Record<string, number>;
-    }>;
+    }> | undefined;
 
     /** Total audio duration in seconds (used for animation loop termination) */
     duration: number;
@@ -154,6 +154,17 @@ interface ChatResponse {
       /** Wall-clock time for entire pipeline (ms) */
       totalTime: number;
     };
+
+    /** TTS provider used (Azure, NVIDIA, etc.) */
+    provider?: string;
+    /** Whether this response used mock/fallback data */
+    isMock?: boolean;
+    /** Compliance check result */
+    isCompliant?: boolean;
+    /** Reason for compliance decision */
+    complianceReason?: string;
+    /** Compliance tier level */
+    complianceTier?: number;
   };
 
   /** Human-readable error message. Present only on failure (success: false). */
@@ -238,7 +249,7 @@ export const action: ActionFunction = async ({ request }) => {
     // ── 4. Convert state to HTTP response ────────────────────────────────────
     // stateToResponse() flattens ALIAConversationState into the frozen ChatResponse
     // shape. It also computes metadata timings from state timestamps.
-    const response: ChatResponse = stateToResponse(state);
+    const response = stateToResponse(state) as ChatResponse;
 
     console.log(
       `[Chat API] ✅ Pipeline complete — LLM: ${response.data?.metadata.llmTime}ms, ` +
