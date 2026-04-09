@@ -403,6 +403,8 @@ export interface AvatarHandle {
   setIsMockData: (isMock: boolean) => void;
   /** Adjust timing offset in ms (positive = visemes arrive later, negative = earlier) */
   setLipSyncOffset: (offsetMs: number) => void;
+  /** Apply a single Azure TTS viseme (ID 0-21) during streaming */
+  applyAzureViseme: (visemeId: number, audioOffsetTicks: number) => void;
   /** Return live jaw and speaking-factor values for the debug overlay */
   getDebugStats: () => LipSyncDebugStats;
   /** Return recent animation samples for viseme/mouth diagnostics */
@@ -695,6 +697,21 @@ export const AvatarCore = forwardRef<AvatarHandle, AvatarProps>(
       },
       setLipSyncOffset: (offsetMs: number) => {
         lipSyncAnimatorRef.current?.setLipSyncOffset(offsetMs);
+      },
+      applyAzureViseme: (visemeId: number, audioOffsetTicks: number) => {
+        if (!lipSyncAnimatorRef.current) {
+          if (!meshRef.current) {
+            console.warn('[Avatar] Cannot apply viseme: mesh not ready');
+            return;
+          }
+          const additionalMeshes = allMorphMeshesRef.current.filter((m: any) => m !== meshRef.current);
+          lipSyncAnimatorRef.current = new LipSyncAnimator({
+            mesh: meshRef.current,
+            additionalMeshes,
+            smoothing: 0.15,
+          });
+        }
+        lipSyncAnimatorRef.current.applyAzureViseme(visemeId, audioOffsetTicks);
       },
       getDebugStats: () => {
         return lipSyncAnimatorRef.current?.getDebugStats?.() ?? { jawOpen: 0, speakingFactor: 0, elapsedMs: 0, frameIndex: 0, frameCount: 0, isPlaying: false, clockSource: 'perf' as const, offsetMs: 0, peakJaw: 0, peakFrame: 0, peakElapsed: 0, appliedTargets: 0, dominantViseme: 'viseme_sil', dominantMouth: 'jawOpen' };
@@ -1545,6 +1562,8 @@ export const Avatar = forwardRef<AvatarHandle, AvatarProps>((props, ref) => {
       avatarRef.current?.setIsMockData(isMock),
     setLipSyncOffset: (offsetMs: number) =>
       avatarRef.current?.setLipSyncOffset(offsetMs),
+    applyAzureViseme: (visemeId: number, audioOffsetTicks: number) =>
+      avatarRef.current?.applyAzureViseme(visemeId, audioOffsetTicks),
     getDebugStats: () =>
       avatarRef.current?.getDebugStats() ?? { jawOpen: 0, speakingFactor: 0, elapsedMs: 0, frameIndex: 0, frameCount: 0, isPlaying: false, clockSource: 'perf' as const, offsetMs: 0, peakJaw: 0, peakFrame: 0, peakElapsed: 0, appliedTargets: 0, dominantViseme: 'viseme_sil', dominantMouth: 'jawOpen' },
     getAnimationLog: (limit?: number) =>

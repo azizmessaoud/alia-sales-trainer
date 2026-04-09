@@ -313,6 +313,10 @@ export default function Index() {
         ]);
       },
 
+      onViseme: (visemeId: number, audioOffsetTicks: number) => {
+        avatarRef.current?.applyAzureViseme?.(visemeId, audioOffsetTicks);
+      },
+
       onError: (msg) => {
         setError(msg);
         setIsLoading(false);
